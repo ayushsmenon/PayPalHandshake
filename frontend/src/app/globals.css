@@ -30,6 +30,32 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+.page-state {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  gap: 16px;
+  padding: 32px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 16px;
+  text-align: center;
+}
+
+.page-state h1,
+.page-state p {
+  margin: 0;
+}
+
+.page-state-error {
+  justify-items: center;
+}
+
+.page-state-error p {
+  max-width: 480px;
+  color: var(--muted);
+}
+
 button,
 a {
   font: inherit;
