@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from .product_reference import SignedProductReference
 
 
 class SignedMandate(BaseModel):
@@ -22,6 +23,7 @@ class SignedMandate(BaseModel):
     issued_at: datetime
     expires_at: datetime
     mandate_id: str = Field(min_length=1)
+    product_references: list[SignedProductReference] = Field(default_factory=list)
 
     @field_validator("currency")
     @classmethod

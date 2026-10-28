@@ -27,3 +27,4 @@ frontend/out/
 # Local tooling
 .DS_Store
 *.log
+services/payment-policy-svc/*.product-reference.json

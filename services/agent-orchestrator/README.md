@@ -74,6 +74,73 @@ milestone.
 The API allows CORS only from `http://localhost:3000`, the local Next.js
 frontend origin.
 
+## Channel3 product-search smoke test
+
+The local-only Channel3 smoke test uses the documented API interface:
+
+- `POST https://api.trychannel3.com/v1/search`
+- Authentication via the `x-api-key` header
+- JSON body `{"query": "27-inch 4K monitor", "limit": 5}`
+- Results read from the documented `products`, `id`, `title`, `brands`, and
+  `offers[].price` fields
+
+Set `CHANNEL3_API_KEY` only in the ignored
+`services/agent-orchestrator/.env`. The key is server-side and must not be
+placed in a `NEXT_PUBLIC_` variable or printed to the terminal.
+
+Run the read-only search from the service directory:
+
+```powershell
+cd services\agent-orchestrator
+python scripts\check_channel3_search.py
+```
+
+The query is an optional positional argument. If omitted, the default is
+`27-inch 4K monitor`; for example:
+
+```powershell
+python scripts\check_channel3_search.py "mechanical keyboard"
+```
+
+The output is limited to five concise product summaries. Missing GTIN, UPC, or
+other product identifiers are reported as unavailable; they are never
+invented. Channel3 results are catalogue search results only—not shopper-
+authorized products and not trusted mandate references. This script does not
+modify the mandate gate, Process C, or any PayPal resource.
+
+## Channel3 product-detail smoke test
+
+The read-only product-detail smoke test follows Channel3's documented
+interface:
+
+- `GET https://api.trychannel3.com/v1/products/{product_id}`
+- Authentication via the `x-api-key` header
+- Product details returned as a documented Product object
+
+It reports the returned product ID, title, brands, description, image count,
+structured attributes, selected variants, explicit identifier attributes,
+merchant offers, prices, currencies, availability, and condition. Missing
+optional fields or identifiers are reported as unavailable. It does not infer a
+GTIN, UPC, EAN, SKU, or MPN from a title or model name.
+
+Run it from the service directory:
+
+```powershell
+cd services\agent-orchestrator
+python scripts\inspect_channel3_product.py <channel3_product_id>
+```
+
+For example:
+
+```powershell
+python scripts\inspect_channel3_product.py product-123
+```
+
+This establishes only what Channel3 returned for that catalogue record. It
+does not establish shopper authorization, product identity for a mandate, or
+trusted product references for the Mandate Gate. It does not call PayPal or
+change any payment state.
+
 ## PayPal Sandbox OAuth smoke test
 
 This repository includes a local-only OAuth connectivity check. It requests a

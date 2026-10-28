@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from .crypto import verify_mandate_signature
 from .models import CandidateDeal, SignedMandate, VerificationCheck, VerificationResult
+from .product_reference import verify_product_reference_signature
 
 
 def _check(name: str, verdict: bool, detail: str) -> VerificationCheck:
@@ -131,19 +132,65 @@ def evaluate_candidate(
             else "Product identifiers are missing or do not exactly match the mandate.",
         )
     )
+    references_valid = _verify_product_references(
+        parsed_mandate, parsed_candidate, public_key_b64, current_time
+    )
+    references_pass = trusted_product_references_configured or references_valid
     checks.append(
         _check(
             "trusted_product_references",
-            trusted_product_references_configured,
-            "Trusted product references are configured."
-            if trusted_product_references_configured
-            else "Trusted product references are not configured; identity is not proven.",
+            references_pass,
+            "Trusted product references match the mandate and are valid."
+            if references_pass
+            else "Trusted product references are missing or invalid; identity is not proven.",
         )
     )
 
     passed = all(check.verdict == "PASS" for check in checks)
     return VerificationResult(
         verdict="PASS" if passed else "REJECT",
-        payment_ready=passed and trusted_product_references_configured,
+        payment_ready=passed,
         checks=checks,
     )
+
+
+def _verify_product_references(
+    mandate: SignedMandate,
+    candidate: CandidateDeal,
+    public_key_b64: str,
+    now: datetime,
+) -> bool:
+    if not mandate.product_references:
+        return False
+    referenced_total = 0
+    for product in candidate.products:
+        candidate_reference = product.product_reference
+        if candidate_reference is None:
+            return False
+        if not any(
+            candidate_reference.model_dump(mode="json")
+            == permitted_reference.model_dump(mode="json")
+            for permitted_reference in mandate.product_references
+        ):
+            return False
+        reference = candidate_reference.reference
+        if now >= reference.expires_at or not verify_product_reference_signature(
+            candidate_reference, public_key_b64
+        ):
+            return False
+        if reference.channel3_product_id != product.product_identifier:
+            return False
+        if reference.merchant_domain != candidate.merchant_id:
+            return False
+        if reference.currency != candidate.currency or reference.currency != mandate.currency:
+            return False
+        if product.offer_url != reference.offer_url:
+            return False
+        if product.unit_price_cents != reference.price_minor:
+            return False
+        if reference.availability != "InStock":
+            return False
+        referenced_total += reference.price_minor * product.quantity
+    if referenced_total != candidate.total_cents:
+        return False
+    return True

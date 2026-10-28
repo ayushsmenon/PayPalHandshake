@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from .product_reference import SignedProductReference
 
 
 class ProductLine(BaseModel):
@@ -14,6 +16,19 @@ class ProductLine(BaseModel):
     product_identifier: str = Field(min_length=1)
     quantity: int = Field(gt=0)
     description: str = Field(min_length=1)
+    unit_price_cents: int | None = Field(default=None, ge=0)
+    offer_url: str | None = Field(default=None, min_length=1)
+    product_reference: SignedProductReference | None = None
+
+    @field_validator("offer_url")
+    @classmethod
+    def offer_url_must_be_http_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("offer_url must be an absolute HTTP(S) URL")
+        return value
 
 
 class SignedMandate(BaseModel):
@@ -29,6 +44,7 @@ class SignedMandate(BaseModel):
     issued_at: datetime
     expires_at: datetime
     mandate_id: str = Field(min_length=1)
+    product_references: list[SignedProductReference] = Field(default_factory=list)
 
     @field_validator("currency")
     @classmethod

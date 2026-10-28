@@ -13,8 +13,8 @@ It is exposed as an independent FastAPI service for backend-to-backend calls.
 - Uses integer cents for spending-cap comparisons.
 - Treats product descriptions as informational; descriptions and similarity
   scores are never proof of product identity.
-- Returns `REJECT` and `payment_ready: false` until trusted product references
-  are explicitly configured.
+- Returns `REJECT` and `payment_ready: false` when a mandate does not contain
+  valid Process C-signed product references matched to the candidate.
 
 Synthetic product identifiers such as `SYNTH-MONITOR-27-4K` may be used in
 isolated tests only. They are not real GTINs, UPCs, or catalogue references.
@@ -41,15 +41,17 @@ base64-encoded Ed25519 public key. This service does not read PayPal
 credentials or call external services.
 
 `evaluate_candidate` returns per-check `PASS`/`REJECT` results and an overall
-verdict. A valid signature and matching candidate still cannot be payment-ready
-when trusted product references are unconfigured.
+verdict. A candidate is payment-ready only when every product line carries a
+valid Process C-signed reference that is present in the signed mandate, is
+unexpired, is `InStock`, and exactly matches the product ID, merchant domain,
+and candidate unit price. Missing references remain fail-closed.
 
 The HTTP request contains only the signed mandate, signature, and candidate
 deal. It cannot provide a public key or declare trusted product references
 configured. A running process is not necessarily ready: `/health` reports
 liveness, while `/ready` reports whether a valid pinned public key is loaded.
-Even when `/ready` reports ready, `/api/v1/verify` remains fail-closed and
-returns `payment_ready: false` until trusted product references exist.
+Even when `/ready` reports ready, `/api/v1/verify` remains fail-closed unless
+the request contains valid trusted product references.
 
 ## Install and test on Windows PowerShell
 
