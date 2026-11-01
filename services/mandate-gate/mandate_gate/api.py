@@ -13,8 +13,11 @@ from dotenv import load_dotenv
 from .crypto import is_valid_public_key_b64
 from .gate import evaluate_candidate
 from .models import CandidateDeal, SignedMandate, VerificationCheck, VerificationResult
+from .versioned_gate import evaluate_v2_candidate
+from .versioned_models import CandidateDealV2, MandateV2, PostAuthorizationBindingV1
 
 PUBLIC_KEY_ENV = "MANDATE_GATE_PUBLIC_KEY_B64"
+BINDING_PUBLIC_KEY_ENV = "MANDATE_GATE_BINDING_PUBLIC_KEY_B64"
 SERVICE_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(SERVICE_ENV_PATH, override=False)
 
@@ -25,6 +28,16 @@ class VerifyRequest(BaseModel):
     mandate: SignedMandate
     signature: str
     candidate: CandidateDeal
+
+
+class VerifyAuthorizationBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mandate: MandateV2
+    mandate_signature: str
+    post_authorization_binding: PostAuthorizationBindingV1
+    binding_signature: str
+    candidate: CandidateDealV2
 
 
 class HealthResponse(BaseModel):
@@ -47,6 +60,15 @@ app = FastAPI(
 def configured_public_key() -> str | None:
     value = os.getenv(PUBLIC_KEY_ENV, "").strip()
     if not value or not is_valid_public_key_b64(value):
+        return None
+    return value
+
+
+def configured_binding_public_key() -> str | None:
+    value = os.getenv(BINDING_PUBLIC_KEY_ENV, "").strip()
+    if not value:
+        return configured_public_key()
+    if not is_valid_public_key_b64(value):
         return None
     return value
 
@@ -95,4 +117,27 @@ def verify(request: VerifyRequest) -> VerificationResult:
         request.candidate,
         public_key,
         trusted_product_references_configured=False,
+    )
+
+
+@app.post(
+    "/api/v2/verify-authorization-binding",
+    response_model=VerificationResult,
+)
+def verify_authorization_binding(
+    request: VerifyAuthorizationBindingRequest,
+) -> VerificationResult:
+    mandate_public_key = configured_public_key()
+    binding_public_key = configured_binding_public_key()
+    if mandate_public_key is None or binding_public_key is None:
+        return configuration_error_result()
+
+    return evaluate_v2_candidate(
+        request.mandate,
+        request.mandate_signature,
+        request.post_authorization_binding,
+        request.binding_signature,
+        request.candidate,
+        mandate_public_key,
+        binding_public_key,
     )

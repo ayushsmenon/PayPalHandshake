@@ -214,17 +214,10 @@ Run it from the service directory:
 python scripts\inspect_sandbox_order.py <order_id>
 ```
 
-## Authorize an approved PayPal Sandbox order
+## Legacy authorization script disabled
 
-After independently confirming the order is approved and matches the expected
-intent, currency, and amount, authorize the specific order with:
-
-```powershell
-python scripts\authorize_sandbox_order.py 9EL47348YP786645U
-```
-
-The script performs a fresh read-only preflight, skips authorization if one
-already exists, and uses a deterministic `PayPal-Request-Id` for this order.
-If the authorization request times out, reconcile the order and authorization
-state before retrying. This script never captures, voids, refunds, or pays out
-funds; captured amount remains zero.
+The former standalone authorization script is retained only for its tested
+validation helpers. Its direct CLI entry point is disabled so Process A cannot
+become an alternative application payment path. PayPal authorization must be
+owned by Process C and gated by Process B; no authorization, capture, void,
+refund, or payout request is made by this script.

@@ -53,6 +53,16 @@ liveness, while `/ready` reports whether a valid pinned public key is loaded.
 Even when `/ready` reports ready, `/api/v1/verify` remains fail-closed unless
 the request contains valid trusted product references.
 
+## Versioned authorization binding
+
+The existing `POST /api/v1/verify` contract and mandate v1 semantics remain
+unchanged. The separate
+`POST /api/v2/verify-authorization-binding` endpoint verifies
+domain-separated `mandate.v2` and `post-authorization-binding.v1` objects,
+their order and authorization relationship, both spending-ceiling checks,
+and discovered `product-reference.v1` objects. Process B performs no PayPal
+network calls; PayPal facts must be independently observed by Process C.
+
 ## Install and test on Windows PowerShell
 
 ```powershell

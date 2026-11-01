@@ -31,81 +31,32 @@ def response(payload: object, status_code: int = 200) -> Mock:
     return result
 
 
-def test_authorizes_expected_order_with_deterministic_request_id() -> None:
-    authorized = order_payload()
-    authorized["status"] = "COMPLETED"
-    authorized["purchase_units"][0]["payments"] = {
-        "authorizations": [
-            {
-                "id": "AUTH-123",
-                "status": "CREATED",
-                "amount": {"currency_code": "USD", "value": "450.00"},
-            }
-        ]
-    }
-
-    with (
-        patch.object(script, "request_sandbox_access_token", return_value="token"),
-        patch.object(script.httpx, "get", return_value=response(order_payload())) as get,
-        patch.object(
-            script.httpx,
-            "post",
-            return_value=response(authorized),
-        ) as post,
-    ):
+def test_main_never_authorizes_or_contacts_paypal() -> None:
+    with patch.object(script.httpx, "post") as post, patch.object(script.httpx, "get") as get:
         sys.argv = ["authorize_sandbox_order.py", "9EL47348YP786645U"]
-        assert script.main() == 0
-
-    post_call = post.call_args
-    assert post_call.args[0].endswith("/9EL47348YP786645U/authorize")
-    assert post_call.kwargs["json"] == {}
-    assert post_call.kwargs["headers"]["Prefer"] == "return=representation"
-    request_id = post_call.kwargs["headers"]["PayPal-Request-Id"]
-    assert request_id == script.authorization_request_id("9EL47348YP786645U")
-    assert get.call_count == 1
+        assert script.main() == 2
+        post.assert_not_called()
+        get.assert_not_called()
 
 
-def test_existing_authorization_skips_post() -> None:
+def test_validation_helpers_remain_meaningful() -> None:
     inspected = order_payload()
     inspected["purchase_units"][0]["payments"] = {
         "authorizations": [{"id": "AUTH-EXISTING", "status": "CREATED"}]
     }
 
-    with (
-        patch.object(script, "request_sandbox_access_token", return_value="token"),
-        patch.object(script.httpx, "get", return_value=response(inspected)),
-        patch.object(script.httpx, "post") as post,
-    ):
-        sys.argv = ["authorize_sandbox_order.py", "9EL47348YP786645U"]
-        assert script.main() == 0
+    assert script.validate_order(inspected, "9EL47348YP786645U") == (True, "")
+    assert script.existing_authorizations(inspected)[0]["id"] == "AUTH-EXISTING"
+
+
+def test_unexpected_order_is_rejected_by_validation_helper() -> None:
+    assert script.validate_order(
+        order_payload(status="CREATED"), "9EL47348YP786645U"
+    )[0] is False
+
+
+def test_imported_main_is_also_disabled() -> None:
+    with patch.object(script.httpx, "post") as post, patch.object(script.httpx, "get") as get:
+        assert script.main() == 2
         post.assert_not_called()
-
-
-def test_unexpected_order_stops_before_authorize() -> None:
-    with (
-        patch.object(script, "request_sandbox_access_token", return_value="token"),
-        patch.object(
-            script.httpx,
-            "get",
-            return_value=response(order_payload(status="CREATED")),
-        ),
-        patch.object(script.httpx, "post") as post,
-    ):
-        sys.argv = ["authorize_sandbox_order.py", "9EL47348YP786645U"]
-        assert script.main() == 1
-        post.assert_not_called()
-
-
-def test_authorization_timeout_does_not_retry() -> None:
-    with (
-        patch.object(script, "request_sandbox_access_token", return_value="token"),
-        patch.object(script.httpx, "get", return_value=response(order_payload())),
-        patch.object(
-            script.httpx,
-            "post",
-            side_effect=httpx.ReadTimeout("timed out"),
-        ) as post,
-    ):
-        sys.argv = ["authorize_sandbox_order.py", "9EL47348YP786645U"]
-        assert script.main() == 1
-        assert post.call_count == 1
+        get.assert_not_called()

@@ -56,6 +56,27 @@ python -m uvicorn mandate_gate.api:app --host 127.0.0.1 --port 8010
 Process B loads only its own `.env` and never accesses Process C's private-key
 environment file.
 
+## Versioned payment-binding milestone
+
+The first versioned integration milestone adds `mandate.v2`,
+`post-authorization-binding.v1`, domain-separated Process C signing, and
+Process B's separate `POST /api/v2/verify-authorization-binding` endpoint.
+The initial mandate binds the real PayPal order ID and spending ceiling but
+does not require discovered Channel3 product references. Those references
+remain `product-reference.v1` objects and are independently checked against
+the final candidate.
+
+Process C also exposes a read-only
+`POST /internal/v1/payment-decisions/dry-run` contract. Its PayPal adapter is
+currently an explicit in-memory test adapter; it makes no PayPal requests.
+The endpoint obtains mandate-consent evidence only through an injected
+server-side provider, never from a frontend boolean or request field. It
+rejects missing dependencies, mismatched PayPal observations, failed Process B
+checks, missing consent, and totals above either signed ceiling. It does not
+create orders, authorize, capture, or consume one-time approval records.
+Durable consent uniqueness and replay prevention remain deferred to a
+persistent `ConsentStore`.
+
 ## Trusted Channel3 product references
 
 Process C can issue a short-lived reference only after it independently
