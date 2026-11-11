@@ -22,7 +22,8 @@ sys.path.insert(0, str(PROCESS_A_DIR))
 from app.main import app as process_a_app
 from app.channel3 import DiscoveredOffer
 from payment_policy.api import create_app
-from payment_policy.product_reference import ProductReference, sign_product_reference
+from payment_policy.category_registry import ProductCategoryEntry, ProductCategoryRegistry
+from payment_policy.product_reference import ProductReferenceV2, sign_product_reference_v2
 from payment_policy.versioned_crypto import (
     canonical_mandate_v2_bytes,
     canonical_post_authorization_binding_v1_bytes,
@@ -176,7 +177,22 @@ def _issue_references(
     deal: dict[str, object],
     signing_key: Ed25519PrivateKey,
 ) -> list[dict[str, object]]:
-    application = create_app()
+    application = create_app(
+        category_registry=ProductCategoryRegistry(
+            [
+                ProductCategoryEntry(
+                    channel3_product_id=item["product_identifier"],
+                    merchant_domain="merchant.example",
+                    canonical_category="electronics",
+                    expected_title=MockChannel3Client().details[
+                        item["product_identifier"]
+                    ]["title"],
+                )
+                for item in deal["items"]
+            ],
+            version="test-1",
+        )
+    )
     candidates = [
         {
             "product_identifier": item["product_identifier"],
@@ -208,7 +224,7 @@ def _issue_references(
         TestClient(application) as client,
     ):
         response = client.post(
-            "/internal/v1/product-references/issue",
+            "/internal/v2/product-references/issue",
             json={"products": candidates},
         )
     assert response.status_code == 200
@@ -298,7 +314,16 @@ def test_process_a_to_c_to_b_accepts_independently_referenced_deal(
 
 @pytest.mark.parametrize(
     "mutation",
-    ["price", "merchant", "product_id", "expired", "invalid_signature"],
+    [
+        "price",
+        "merchant",
+        "product_id",
+        "expired",
+        "tampered_category",
+        "disallowed_category",
+        "malformed_signature",
+        "forged_signature",
+    ],
 )
 def test_process_b_rejects_tampered_or_expired_references(
     process_b_server: tuple[str, Ed25519PrivateKey],
@@ -318,16 +343,27 @@ def test_process_b_rejects_tampered_or_expired_references(
     elif mutation == "product_id":
         product["product_identifier"] = "wrong-product"
     elif mutation == "expired":
-        expired = ProductReference.model_validate(reference["reference"]).model_copy(
+        expired = ProductReferenceV2.model_validate(reference["reference"]).model_copy(
             update={
                 "issued_at": NOW - timedelta(hours=2),
                 "expires_at": NOW - timedelta(hours=1),
             }
         )
-        expired_signed = sign_product_reference(expired, signing_key)
+        expired_signed = sign_product_reference_v2(expired, signing_key)
         product["product_reference"] = expired_signed.model_dump(mode="json")
-    else:
+    elif mutation == "tampered_category":
+        reference["reference"]["canonical_category"] = "toys"
+    elif mutation == "disallowed_category":
+        disallowed = ProductReferenceV2.model_validate(
+            reference["reference"]
+        ).model_copy(update={"canonical_category": "toys"})
+        product["product_reference"] = sign_product_reference_v2(
+            disallowed, signing_key
+        ).model_dump(mode="json")
+    elif mutation == "malformed_signature":
         reference["signature_b64"] = "invalid"
+    else:
+        reference["signature_b64"] = base64.b64encode(b"\x00" * 64).decode("ascii")
 
     response = httpx.post(
         f"{process_b_server[0]}/api/v2/verify-authorization-binding",

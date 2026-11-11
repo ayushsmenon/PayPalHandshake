@@ -7,7 +7,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from .product_reference import SignedProductReference
+from .product_reference import SignedProductReference, SignedProductReferenceV2
 
 
 class ProductLine(BaseModel):
@@ -29,6 +29,10 @@ class ProductLine(BaseModel):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("offer_url must be an absolute HTTP(S) URL")
         return value
+
+
+class ProductLineV2(ProductLine):
+    product_reference: SignedProductReferenceV2 | None = None
 
 
 class SignedMandate(BaseModel):

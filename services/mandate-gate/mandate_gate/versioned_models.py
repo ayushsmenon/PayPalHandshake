@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .models import ProductLine
+from .models import ProductLineV2
 
 
 class MandateV2(BaseModel):
@@ -83,7 +83,7 @@ class CandidateDealV2(BaseModel):
     merchant_id: str = Field(min_length=1)
     total_cents: int = Field(ge=0)
     currency: str = Field(min_length=3, max_length=3)
-    products: list[ProductLine] = Field(min_length=1)
+    products: list[ProductLineV2] = Field(min_length=1)
 
     @field_validator("currency")
     @classmethod

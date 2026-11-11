@@ -24,7 +24,10 @@ from payment_policy.paypal_adapter import (
     ObservedPayPalOrder,
 )
 from payment_policy.process_b_client import ProcessBClient
-from payment_policy.product_reference import ProductReference, sign_product_reference
+from payment_policy.product_reference import (
+    ProductReferenceV2,
+    sign_product_reference_v2,
+)
 from payment_policy.versioned_crypto import (
     canonical_mandate_v2_bytes,
     canonical_post_authorization_binding_v1_bytes,
@@ -149,8 +152,8 @@ def _fixtures(
         issued_at=current_time - timedelta(seconds=30),
         expires_at=current_time + timedelta(hours=1),
     )
-    reference = ProductReference(
-        schema_version="product-reference.v1",
+    reference = ProductReferenceV2(
+        schema_version="product-reference.v2",
         channel3_product_id="monitor-4k",
         offer_url="https://merchant.example/products/monitor-4k",
         merchant_domain="merchant.example",
@@ -160,8 +163,10 @@ def _fixtures(
         condition="new",
         issued_at=current_time - timedelta(minutes=1),
         expires_at=current_time + timedelta(hours=1),
+        canonical_category="electronics",
+        registry_version="test-1",
     )
-    signed_reference = sign_product_reference(reference, private_key)
+    signed_reference = sign_product_reference_v2(reference, private_key)
     candidate = CandidateDealV2(
         negotiation_id=mandate.negotiation_id,
         paypal_order_id=mandate.paypal_order_id,
