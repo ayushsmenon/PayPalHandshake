@@ -1,15 +1,17 @@
 """PostgreSQL ORM models and Pydantic schemas for the PayPal Agent Platform.
 
 Architecture Roles & Invariants:
-- Process A / Shopper Intent: Tracks shopper constraints, prompt, budget, currency.
+- Process A / Shopper Intent: Tracks shopper constraints, prompt, budget (cents & decimal), currency.
 - Process B / Negotiation: Tracks products, quotes, and cryptographic offer snapshots.
 - Process C / Payment Policy Service: Audit logs for PayPal Orders v2, Authorizations,
   Captures, and Payouts with idempotency keys for replay protection.
 - Verification Gates: Audit log of deterministic gate decisions and digests.
+- Protocol Alignment: mandate.v2, product-reference.v1, minor unit integer precision.
 
-SECURITY INVARIANT:
+SECURITY INVARIANTS:
 - NO PayPal credentials, client secrets, or private Ed25519 signing keys are stored.
 - Only public keys, cryptographic signatures, or verifiable reference digests are allowed.
+- Replay prevention enforced for mandates and payment events.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -32,7 +35,24 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+# ============================================================================
+# SQLite Compatibility Compilation Hooks
+# Allows models to run seamlessly in local test suites with SQLite :memory:
+# without altering PostgreSQL native DDL.
+# ============================================================================
+
+@compiles(PG_UUID, "sqlite")
+def _compile_pg_uuid_sqlite(type_, compiler, **kw):  # type: ignore[no-untyped-def]
+    return "VARCHAR(36)"
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(type_, compiler, **kw):  # type: ignore[no-untyped-def]
+    return "TEXT"
 
 
 # ============================================================================
@@ -59,6 +79,13 @@ class Negotiation(Base):
     )
     budget_amount: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False
+    )
+    # Integer minor units (cents) for exact cryptographic and financial comparison
+    budget_cents: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    budget_amount_cents: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
     )
     currency: Mapped[str] = mapped_column(
         String(3), nullable=False
@@ -95,9 +122,13 @@ class Negotiation(Base):
     payment_events: Mapped[list["PaymentEvent"]] = relationship(
         back_populates="negotiation", cascade="all, delete-orphan", lazy="select"
     )
+    product_references: Mapped[list["ProductReference"]] = relationship(
+        back_populates="negotiation", cascade="all, delete-orphan", lazy="select"
+    )
 
     __table_args__ = (
         CheckConstraint("budget_amount >= 0", name="chk_negotiations_budget_positive"),
+        CheckConstraint("budget_cents >= 0", name="chk_negotiations_budget_cents_positive"),
         CheckConstraint("length(currency) = 3", name="chk_negotiations_currency_len"),
     )
 
@@ -139,6 +170,9 @@ class Product(Base):
     offer_snapshots: Mapped[list["OfferSnapshot"]] = relationship(
         back_populates="product", lazy="select"
     )
+    product_references: Mapped[list["ProductReference"]] = relationship(
+        back_populates="product", lazy="select"
+    )
 
 
 class OfferSnapshot(Base):
@@ -170,6 +204,13 @@ class OfferSnapshot(Base):
     offered_price: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False
     )
+    # Minor integer units
+    price_cents: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    offered_price_cents: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
     currency: Mapped[str] = mapped_column(
         String(3), nullable=False
     )
@@ -193,14 +234,16 @@ class OfferSnapshot(Base):
 
     __table_args__ = (
         CheckConstraint("offered_price >= 0", name="chk_offer_snapshots_price_positive"),
+        CheckConstraint("price_cents >= 0", name="chk_offer_snapshots_price_cents_positive"),
         CheckConstraint("length(currency) = 3", name="chk_offer_snapshots_currency_len"),
     )
 
 
 class Mandate(Base):
-    """Signed shopper spending authorizations and bounded agreements.
+    """Signed shopper spending authorizations aligned with mandate.v2 protocol.
 
-    SECURITY RULE: Contains NO private keys. Only Ed25519 public keys and signatures.
+    SECURITY INVARIANT: Contains NO private keys. Only Ed25519 public keys and signatures.
+    Replay protection supported by unique mandate_id, digest, and consumption logging.
     """
 
     __tablename__ = "mandates"
@@ -214,6 +257,28 @@ class Mandate(Base):
         nullable=False,
         index=True,
     )
+    # mandate.v2 explicit protocol fields
+    mandate_id: Mapped[str] = mapped_column(
+        String(128), unique=True, nullable=False, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="mandate.v2"
+    )
+    paypal_order_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+    authorized_cap_cents: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    allowed_product_categories: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    merchant_restrictions: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    expected_paypal_payee_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
     public_key: Mapped[str] = mapped_column(
         String(128), nullable=False, index=True
     )
@@ -223,11 +288,26 @@ class Mandate(Base):
     mandate_payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
+    nonce: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    mandate_digest: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="ACTIVE", index=True
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    consumption_tx_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -237,9 +317,132 @@ class Mandate(Base):
     negotiation: Mapped["Negotiation"] = relationship(
         back_populates="mandates", lazy="select"
     )
+    consumptions: Mapped[list["MandateConsumption"]] = relationship(
+        back_populates="mandate", cascade="all, delete-orphan", lazy="select"
+    )
 
     __table_args__ = (
-        CheckConstraint("expires_at > created_at", name="chk_mandates_expiry_valid"),
+        CheckConstraint("expires_at > issued_at", name="chk_mandates_expiry_valid"),
+        CheckConstraint("authorized_cap_cents >= 0", name="chk_mandates_cap_cents_positive"),
+    )
+
+
+class ProductReference(Base):
+    """Canonical, signed product reference conforming to product-reference.v1."""
+
+    __tablename__ = "product_references"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    negotiation_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("negotiations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    product_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("products.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    schema_version: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="product-reference.v1"
+    )
+    channel3_product_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, index=True
+    )
+    offer_url: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )
+    merchant_domain: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    price_minor: Mapped[int] = mapped_column(
+        BigInteger, nullable=False
+    )
+    currency: Mapped[str] = mapped_column(
+        String(3), nullable=False
+    )
+    availability: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    condition: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    canonical_digest: Mapped[str] = mapped_column(
+        String(64), nullable=False, index=True
+    )
+    signature_b64: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )
+    public_key_b64: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    # Relationships
+    negotiation: Mapped["Negotiation"] = relationship(
+        back_populates="product_references", lazy="select"
+    )
+    product: Mapped["Product | None"] = relationship(
+        back_populates="product_references", lazy="select"
+    )
+
+    __table_args__ = (
+        CheckConstraint("expires_at > issued_at", name="chk_product_references_expiry"),
+        CheckConstraint("price_minor >= 0", name="chk_product_references_price_positive"),
+        CheckConstraint("length(currency) = 3", name="chk_product_references_currency"),
+    )
+
+
+class MandateConsumption(Base):
+    """Enforces strict single-use mandate consumption replay prevention."""
+
+    __tablename__ = "mandate_consumptions"
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    mandate_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("mandates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    mandate_digest: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
+    consumed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(
+        String(128), unique=True, nullable=False, index=True
+    )
+    paypal_order_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    payment_event_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("payment_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+
+    # Relationships
+    mandate: Mapped["Mandate"] = relationship(
+        back_populates="consumptions", lazy="select"
     )
 
 
@@ -293,7 +496,7 @@ class PaymentEvent(Base):
     """Immutable transaction log for PayPal Orders v2, Authorizations, Captures, and Payouts.
 
     REPLAY PROTECTION: Enforces uniqueness on idempotency_key (PayPal-Request-Id).
-    SECURITY RULE: NO PayPal credentials, client secrets, or private auth tokens.
+    SECURITY INVARIANT: NO PayPal credentials, client secrets, or private auth tokens.
     """
 
     __tablename__ = "payment_events"
@@ -328,6 +531,9 @@ class PaymentEvent(Base):
     amount: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False
     )
+    amount_cents: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
     currency: Mapped[str] = mapped_column(
         String(3), nullable=False, default="USD"
     )
@@ -348,6 +554,7 @@ class PaymentEvent(Base):
 
     __table_args__ = (
         CheckConstraint("amount >= 0", name="chk_payment_events_amount_positive"),
+        CheckConstraint("amount_cents >= 0", name="chk_payment_events_amount_cents_positive"),
         CheckConstraint("length(currency) = 3", name="chk_payment_events_currency_len"),
     )
 
@@ -363,6 +570,8 @@ class NegotiationSchema(BaseModel):
     shopper_id: str = Field(min_length=1, max_length=128)
     request_prompt: str = Field(min_length=1)
     budget_amount: Decimal = Field(ge=0)
+    budget_cents: int = Field(default=0, ge=0)
+    budget_amount_cents: int = Field(default=0, ge=0)
     currency: str = Field(min_length=3, max_length=3)
     status: str = Field(default="OPEN", max_length=32)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -391,6 +600,8 @@ class OfferSnapshotSchema(BaseModel):
     merchant_id: str = Field(min_length=1, max_length=255)
     merchant_name: str | None = Field(default=None, max_length=255)
     offered_price: Decimal = Field(ge=0)
+    price_cents: int = Field(default=0, ge=0)
+    offered_price_cents: int = Field(default=0, ge=0)
     currency: str = Field(min_length=3, max_length=3)
     terms_payload: dict[str, Any] = Field(default_factory=dict)
     offer_hash: str = Field(min_length=64, max_length=64)
@@ -402,12 +613,59 @@ class MandateSchema(BaseModel):
 
     id: UUID = Field(default_factory=uuid4)
     negotiation_id: UUID
+    mandate_id: str = Field(min_length=1, max_length=128)
+    schema_version: str = Field(default="mandate.v2", max_length=32)
+    paypal_order_id: str | None = Field(default=None, max_length=128)
+    authorized_cap_cents: int = Field(default=0, ge=0)
+    allowed_product_categories: list[str] = Field(default_factory=list)
+    merchant_restrictions: list[str] = Field(default_factory=list)
+    expected_paypal_payee_id: str | None = Field(default=None, max_length=128)
     public_key: str = Field(min_length=1, max_length=128)
     signature: str = Field(min_length=1)
     mandate_payload: dict[str, Any] = Field(default_factory=dict)
-    expires_at: datetime
+    nonce: str | None = Field(default=None, max_length=128)
+    mandate_digest: str | None = Field(default=None, max_length=64)
     status: str = Field(default="ACTIVE", max_length=32)
+    consumed_at: datetime | None = None
+    consumption_tx_id: str | None = None
+    issued_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ProductReferenceSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    id: UUID = Field(default_factory=uuid4)
+    negotiation_id: UUID
+    product_id: UUID | None = None
+    schema_version: str = Field(default="product-reference.v1", max_length=32)
+    channel3_product_id: str = Field(min_length=1, max_length=255)
+    offer_url: str = Field(min_length=1)
+    merchant_domain: str = Field(min_length=1, max_length=255)
+    price_minor: int = Field(ge=0)
+    currency: str = Field(min_length=3, max_length=3)
+    availability: str = Field(min_length=1, max_length=64)
+    condition: str | None = None
+    canonical_digest: str = Field(min_length=64, max_length=64)
+    signature_b64: str = Field(min_length=1)
+    public_key_b64: str | None = None
+    issued_at: datetime
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class MandateConsumptionSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    id: UUID = Field(default_factory=uuid4)
+    mandate_id: UUID
+    mandate_digest: str = Field(min_length=64, max_length=64)
+    consumed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    paypal_order_id: str | None = Field(default=None, max_length=128)
+    payment_event_id: UUID | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class VerificationEventSchema(BaseModel):
@@ -436,6 +694,7 @@ class PaymentEventSchema(BaseModel):
     paypal_payout_batch_id: str | None = Field(default=None, max_length=128)
     event_type: str = Field(min_length=1, max_length=64)
     amount: Decimal = Field(ge=0)
+    amount_cents: int = Field(default=0, ge=0)
     currency: str = Field(default="USD", min_length=3, max_length=3)
     status: str = Field(default="CREATED", max_length=32)
     raw_response_summary: dict[str, Any] = Field(default_factory=dict)

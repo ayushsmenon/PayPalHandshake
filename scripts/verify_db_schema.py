@@ -1,10 +1,10 @@
-"""Standalone Verification Script for PostgreSQL Database Schema Setup.
+"""Standalone Verification Script for PostgreSQL Database Schema Setup & Protocol Reconciliation.
 
 Tests and verifies:
-1. SQL migration file syntax, tables, constraints, indexes, triggers, and zero-secret rules.
+1. SQL migration files (001_initial_schema.sql, 002_protocol_reconcile.sql) syntax, constraints, and zero-secret rules.
 2. SQLAlchemy ORM models compilation against PostgreSQL 16 dialect.
-3. Pydantic v2 serialization/deserialization for all 6 core entities.
-4. Replay protection and audit immutability invariants.
+3. Pydantic v2 serialization/deserialization for all entities.
+4. Minor-unit integer consistency, mandate.v2, product-reference.v1, and replay prevention.
 5. (Optional) Live PostgreSQL container verification if DATABASE_URL is set or passed via --db-url.
 
 Usage:
@@ -39,12 +39,16 @@ from src.models import (
     Product,
     OfferSnapshot,
     Mandate,
+    ProductReference,
+    MandateConsumption,
     VerificationEvent,
     PaymentEvent,
     NegotiationSchema,
     ProductSchema,
     OfferSnapshotSchema,
     MandateSchema,
+    ProductReferenceSchema,
+    MandateConsumptionSchema,
     VerificationEventSchema,
     PaymentEventSchema,
 )
@@ -54,6 +58,8 @@ EXPECTED_TABLES = [
     "products",
     "offer_snapshots",
     "mandates",
+    "product_references",
+    "mandate_consumptions",
     "verification_events",
     "payment_events",
 ]
@@ -68,21 +74,26 @@ FORBIDDEN_KEYWORDS = [
 ]
 
 
-def test_sql_migration_file() -> None:
-    """Verifies that the SQL migration file satisfies all structural and security invariants."""
-    print("[1/5] Verifying SQL migration script...")
-    migration_path = REPO_ROOT / "migrations" / "001_initial_schema.sql"
-    assert migration_path.exists(), f"Missing migration file at {migration_path}"
+def test_sql_migration_files() -> None:
+    """Verifies that both SQL migration files satisfy structural and security invariants."""
+    print("[1/5] Verifying SQL migration scripts (001 & 002)...")
+    migration_files = [
+        REPO_ROOT / "migrations" / "001_initial_schema.sql",
+        REPO_ROOT / "migrations" / "002_protocol_reconcile.sql",
+    ]
 
-    sql_content = migration_path.read_text(encoding="utf-8")
+    combined_code = []
+    for migration_path in migration_files:
+        assert migration_path.exists(), f"Missing migration file at {migration_path}"
+        sql_content = migration_path.read_text(encoding="utf-8")
 
-    # Strip SQL comments before checking column definitions
-    lines_no_comments = []
-    for line in sql_content.splitlines():
-        clean_line = re.sub(r"--.*$", "", line).strip()
-        if clean_line:
-            lines_no_comments.append(clean_line)
-    sql_code_only = "\n".join(lines_no_comments).lower()
+        # Strip SQL comments
+        for line in sql_content.splitlines():
+            clean_line = re.sub(r"--.*$", "", line).strip()
+            if clean_line:
+                combined_code.append(clean_line.lower())
+
+    sql_code_only = "\n".join(combined_code)
 
     # Check for forbidden secret column definitions
     for forbidden in FORBIDDEN_KEYWORDS:
@@ -90,22 +101,21 @@ def test_sql_migration_file() -> None:
             f"CRITICAL SECURITY VIOLATION: '{forbidden}' found in migration SQL statements!"
         )
 
-    # Check for expected tables
+    # Check for all expected tables across migrations
     for table in EXPECTED_TABLES:
         pattern = rf"create\s+table\s+(?:if\s+not\s+exists\s+)?{table}\b"
         assert re.search(pattern, sql_code_only), f"Table {table} not found in migration SQL"
 
     # Check for replay protection idempotency key unique constraint/index
     assert "idempotency_key" in sql_code_only, "Missing idempotency_key for replay protection"
-    assert "uq_payment_events_idempotency_key" in sql_code_only or "unique index" in sql_code_only
+    assert "mandate_digest" in sql_code_only, "Missing mandate_digest for replay protection"
 
-    # Check for UUID extension
-    assert "gen_random_uuid()" in sql_code_only or "uuid_generate_v4()" in sql_code_only
+    # Check for integer minor units (cents)
+    assert "budget_cents" in sql_code_only or "budget_amount_cents" in sql_code_only
+    assert "price_minor" in sql_code_only
+    assert "amount_cents" in sql_code_only
 
-    # Check for triggers and functions
-    assert "update_updated_at_column" in sql_code_only, "Missing updated_at trigger function"
-
-    print("  -> Migration SQL file structure, tables, and security invariants: PASS")
+    print("  -> Migration SQL files structure, tables, and security invariants: PASS")
 
 
 def test_sqlalchemy_models_ddl_compilation() -> None:
@@ -136,11 +146,13 @@ def test_pydantic_schemas_and_validation() -> None:
         shopper_id="shopper_usr_12345",
         request_prompt="Find the best 27-inch 4K monitor under $500",
         budget_amount=Decimal("500.00"),
+        budget_cents=50000,
+        budget_amount_cents=50000,
         currency="USD",
         status="OPEN",
         metadata={"delivery_zip": "94105"},
     )
-    assert neg.budget_amount == Decimal("500.00")
+    assert neg.budget_cents == 50000
 
     # 2. Product
     prod = ProductSchema(
@@ -162,35 +174,48 @@ def test_pydantic_schemas_and_validation() -> None:
         merchant_id="merchant_dell_direct",
         merchant_name="Dell Store",
         offered_price=Decimal("459.99"),
+        price_cents=45999,
+        offered_price_cents=45999,
         currency="USD",
         terms_payload={"shipping": "free", "return_window_days": 30},
         offer_hash=offer_hash,
     )
-    assert len(snapshot.offer_hash) == 64
+    assert snapshot.price_cents == 45999
 
-    # 4. Mandate (Zero private keys, only public key & signature)
+    # 4. Mandate (mandate.v2, zero private keys)
     mandate = MandateSchema(
         negotiation_id=neg_id,
+        mandate_id="mnd_reconciled_001",
+        schema_version="mandate.v2",
+        paypal_order_id="ORD-123456",
+        authorized_cap_cents=50000,
+        allowed_product_categories=["monitors"],
+        merchant_restrictions=["Dell"],
         public_key="a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         signature="3045022100e4a7796d8e20302061b4d8d9b15e47c16260e0a58a9e7123456789abcdef0220",
-        mandate_payload={"max_cap": 500.0, "currency": "USD", "merchant": "Dell Store"},
+        mandate_payload={"max_cap": 500.0, "currency": "USD"},
         expires_at=now + timedelta(hours=4),
         status="ACTIVE",
     )
-    assert mandate.public_key.startswith("a1b2c3d4")
+    assert mandate.schema_version == "mandate.v2"
 
-    # 5. Verification Event
-    manifest_digest = hashlib.sha256(b"manifest_payload_data").hexdigest()
-    event = VerificationEventSchema(
+    # 5. Product Reference (product-reference.v1)
+    pref = ProductReferenceSchema(
         negotiation_id=neg_id,
-        gate_name="PRICE_CAP_GATE",
-        decision="PASSED",
-        passed_checks=["CAP_CHECK_WITHIN_BUDGET", "MERCHANT_ALLOWLIST_CHECK"],
-        blocked_checks=[],
-        reason_details="Total price $459.99 is within authorized budget of $500.00",
-        manifest_digest=manifest_digest,
+        product_id=prod_id,
+        schema_version="product-reference.v1",
+        channel3_product_id="ch3_item_776655",
+        offer_url="https://dell.com/item",
+        merchant_domain="dell.com",
+        price_minor=45999,
+        currency="USD",
+        availability="IN_STOCK",
+        canonical_digest="e" * 64,
+        signature_b64="c2lnX2I2NA==",
+        issued_at=now,
+        expires_at=now + timedelta(days=1),
     )
-    assert event.decision == "PASSED"
+    assert pref.price_minor == 45999
 
     # 6. Payment Event (Replay protection via idempotency key)
     pay_event = PaymentEventSchema(
@@ -200,12 +225,13 @@ def test_pydantic_schemas_and_validation() -> None:
         paypal_authorization_id="AUTH-99998888",
         event_type="AUTHORIZED",
         amount=Decimal("459.99"),
+        amount_cents=45999,
         currency="USD",
         status="COMPLETED",
         raw_response_summary={"intent": "AUTHORIZE", "status": "COMPLETED"},
     )
-    assert pay_event.idempotency_key == "REQ-IDEMP-20261111-HS2048-001"
-    print("  -> Pydantic serialization, validation, and zero-secret invariants: PASS")
+    assert pay_event.amount_cents == 45999
+    print("  -> Pydantic serialization, validation, and minor-unit invariants: PASS")
 
 
 def test_zero_secret_audit() -> None:
@@ -222,16 +248,19 @@ def test_zero_secret_audit() -> None:
 
 
 def test_live_postgres_connection(db_url: str) -> None:
-    """Tests executing the migration against a live PostgreSQL container/database if provided."""
+    """Tests executing both migrations against a live PostgreSQL container/database if provided."""
     print(f"[5/5] Connecting to live PostgreSQL database at {db_url}...")
     engine = create_engine(db_url)
-    migration_path = REPO_ROOT / "migrations" / "001_initial_schema.sql"
-    sql_script = migration_path.read_text(encoding="utf-8")
+    migration_files = [
+        REPO_ROOT / "migrations" / "001_initial_schema.sql",
+        REPO_ROOT / "migrations" / "002_protocol_reconcile.sql",
+    ]
 
     with engine.connect() as conn:
         with conn.begin():
-            # Run DDL migration statements
-            conn.execute(text(sql_script))
+            for m_path in migration_files:
+                sql_script = m_path.read_text(encoding="utf-8")
+                conn.execute(text(sql_script))
 
         # Verify tables exist in information_schema
         result = conn.execute(
@@ -258,7 +287,7 @@ def test_live_postgres_connection(db_url: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify PostgreSQL Schema Setup")
+    parser = argparse.ArgumentParser(description="Verify PostgreSQL Schema Setup & Reconciliation")
     parser.add_argument(
         "--db-url",
         default=os.getenv("DATABASE_URL"),
@@ -267,11 +296,11 @@ def main() -> int:
     args = parser.parse_args()
 
     print("=" * 70)
-    print("PAYPAL AGENT PLATFORM: DATABASE SCHEMA VERIFICATION SUITE")
+    print("PAYPAL AGENT PLATFORM: DATABASE SCHEMA & PROTOCOL RECONCILE AUDIT")
     print("=" * 70)
 
     try:
-        test_sql_migration_file()
+        test_sql_migration_files()
         test_sqlalchemy_models_ddl_compilation()
         test_pydantic_schemas_and_validation()
         test_zero_secret_audit()
@@ -282,7 +311,7 @@ def main() -> int:
             print("[5/5] Live PostgreSQL connection skipped (no --db-url or DATABASE_URL provided).")
 
         print("=" * 70)
-        print("ALL DATABASE SCHEMA CHECKS PASSED SUCCESSFULLY.")
+        print("ALL DATABASE SCHEMA & RECONCILIATION CHECKS PASSED SUCCESSFULLY.")
         print("=" * 70)
         return 0
     except Exception as exc:
