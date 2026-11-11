@@ -22,6 +22,7 @@ from src.models import (
     Product,
     OfferSnapshot,
     Mandate,
+    ConsentEvidence,
     ProductReference,
     MandateConsumption,
     VerificationEvent,
@@ -30,6 +31,7 @@ from src.models import (
     ProductSchema,
     OfferSnapshotSchema,
     MandateSchema,
+    ConsentEvidenceSchema,
     ProductReferenceSchema,
     MandateConsumptionSchema,
     VerificationEventSchema,
@@ -48,12 +50,13 @@ def db_manager():
 
 
 def test_models_metadata_completeness():
-    """Verifies all expected core and reconciled tables exist in SQLAlchemy metadata."""
+    """Verifies all expected core, reconciled, and consent tables exist in SQLAlchemy metadata."""
     expected_tables = {
         "negotiations",
         "products",
         "offer_snapshots",
         "mandates",
+        "consent_evidence",
         "product_references",
         "mandate_consumptions",
         "verification_events",
@@ -81,10 +84,8 @@ def test_sqlite_session_create_all_and_query(db_manager: DatabaseSessionManager)
         neg = Negotiation(
             shopper_id="shopper_baseline_01",
             request_prompt="Search monitor under $400",
-            budget_amount=Decimal("400.00"),
             budget_cents=40000,
-            budget_amount_cents=40000,
-            currency="USD",
+            currency_code="USD",
             status="OPEN",
             metadata_={"test": True},
         )
@@ -106,15 +107,17 @@ def test_sqlite_session_create_all_and_query(db_manager: DatabaseSessionManager)
         pref = ProductReference(
             negotiation_id=neg.id,
             product_id=prod.id,
+            protocol_version="v1",
             schema_version="product-reference.v1",
             channel3_product_id="ch3_456",
             offer_url="https://example.com/product",
             merchant_domain="example.com",
-            price_minor=37999,
-            currency="USD",
+            price_cents=37999,
+            currency_code="USD",
             availability="IN_STOCK",
-            canonical_digest="d" * 64,
-            signature_b64="c2lnbmF0dXJl",
+            digest="d" * 64,
+            signature="c2lnbmF0dXJl",
+            public_key="pk_test_sample",
             issued_at=now,
             expires_at=now + timedelta(days=1),
         )
@@ -126,7 +129,7 @@ def test_sqlite_session_create_all_and_query(db_manager: DatabaseSessionManager)
         assert len(neg.products) == 1
         assert neg.products[0].title == "Dell 27 Monitor"
         assert len(neg.product_references) == 1
-        assert neg.product_references[0].price_minor == 37999
+        assert neg.product_references[0].price_cents == 37999
 
 
 def test_pydantic_schemas_validation():
@@ -140,6 +143,7 @@ def test_pydantic_schemas_validation():
         schema_version="mandate.v2",
         paypal_order_id="ORD-998877",
         authorized_cap_cents=50000,
+        currency_code="USD",
         allowed_product_categories=["monitors", "displays"],
         merchant_restrictions=["Dell", "Amazon"],
         public_key="a" * 64,

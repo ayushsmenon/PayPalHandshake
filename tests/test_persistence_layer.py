@@ -52,6 +52,7 @@ def test_duplicate_idempotency_key_rejected(db_session):
         amount=Decimal("150.00"),
         amount_cents=15000,
         currency="USD",
+        currency_code="USD",
         status="COMPLETED",
         paypal_order_id="ORD-111",
     )
@@ -66,6 +67,7 @@ def test_duplicate_idempotency_key_rejected(db_session):
             amount=Decimal("150.00"),
             amount_cents=15000,
             currency="USD",
+            currency_code="USD",
             status="COMPLETED",
             paypal_order_id="ORD-111",
         )
@@ -85,10 +87,11 @@ def test_consume_expired_mandate_fails(db_session):
     neg = neg_repo.create_negotiation(
         shopper_id="shopper_expired_test",
         request_prompt="Buy widget",
-        budget_amount=Decimal("50.00"),
+        budget_cents=5000,
         currency="USD",
     )
 
+    digest_val = "1" * 64
     # Create a mandate with expiration in the past
     past_time = datetime.now(timezone.utc) - timedelta(minutes=10)
     mandate = mandate_repo.save_mandate(
@@ -96,17 +99,20 @@ def test_consume_expired_mandate_fails(db_session):
         mandate_id="mnd_expired_001",
         public_key="pubkey_test_123",
         signature="sig_test_123",
+        mandate_digest=digest_val,
         issued_at=past_time - timedelta(hours=1),
         expires_at=past_time,
         status="ACTIVE",
     )
 
-    # Attempt to consume expired mandate
+    # Attempt to consume expired mandate with raise_on_error=True
     with pytest.raises(MandateExpiredError) as exc_info:
         mandate_repo.consume_mandate(
             mandate_id="mnd_expired_001",
+            expected_digest=digest_val,
             idempotency_key="CONSUME-IDEMP-001",
             consumption_tx_id="TX-EXPIRED-001",
+            raise_on_error=True,
         )
     assert "expired" in str(exc_info.value).lower()
 
@@ -124,10 +130,11 @@ def test_consume_already_consumed_mandate_fails(db_session):
     neg = neg_repo.create_negotiation(
         shopper_id="shopper_double_consume_test",
         request_prompt="Buy gadget",
-        budget_amount=Decimal("100.00"),
+        budget_cents=10000,
         currency="USD",
     )
 
+    digest_val = "2" * 64
     # Create active mandate expiring in future
     future_time = datetime.now(timezone.utc) + timedelta(hours=2)
     mandate = mandate_repo.save_mandate(
@@ -135,32 +142,37 @@ def test_consume_already_consumed_mandate_fails(db_session):
         mandate_id="mnd_double_consume_001",
         public_key="pubkey_test_456",
         signature="sig_test_456",
+        mandate_digest=digest_val,
         expires_at=future_time,
         status="ACTIVE",
     )
 
     # 1. First consumption succeeds
-    consumption = mandate_repo.consume_mandate(
-        mandate_id="mnd_double_consume_001",
-        idempotency_key="CONSUME-FIRST-001",
-        consumption_tx_id="TX-SUCCESS-001",
+    assert (
+        mandate_repo.consume_mandate(
+            mandate_id="mnd_double_consume_001",
+            expected_digest=digest_val,
+            idempotency_key="CONSUME-FIRST-001",
+            consumption_tx_id="TX-SUCCESS-001",
+        )
+        is True
     )
-    assert consumption.id is not None
-    assert consumption.idempotency_key == "CONSUME-FIRST-001"
 
     # Verify mandate status is updated to CONSUMED
     refreshed_mandate = mandate_repo.get_mandate_by_id("mnd_double_consume_001")
     assert refreshed_mandate.status == "CONSUMED"
     assert refreshed_mandate.consumed_at is not None
 
-    # 2. Second consumption attempt must raise MandateAlreadyConsumedError
+    # 2. Second consumption attempt must raise MandateAlreadyConsumedError when raise_on_error=True
     with pytest.raises(MandateAlreadyConsumedError) as exc_info:
         mandate_repo.consume_mandate(
             mandate_id="mnd_double_consume_001",
+            expected_digest=digest_val,
             idempotency_key="CONSUME-SECOND-002",
             consumption_tx_id="TX-SECOND-002",
+            raise_on_error=True,
         )
-    assert "already been consumed" in str(exc_info.value)
+    assert "already" in str(exc_info.value).lower()
 
 
 # ============================================================================
@@ -177,6 +189,7 @@ def test_monetary_values_minor_unit_boundaries(db_session):
     neg = neg_repo.create_negotiation(
         shopper_id="shopper_cents_test",
         request_prompt="4K monitor under $500",
+        budget_cents=49999,
         budget_amount=budget_decimal,
         currency="USD",
     )
@@ -189,7 +202,7 @@ def test_monetary_values_minor_unit_boundaries(db_session):
     snapshot = neg_repo.create_offer_snapshot(
         negotiation_id=neg.id,
         merchant_id="merchant_dell",
-        offered_price=snapshot_price,
+        price_cents=45995,
         currency="USD",
         offer_hash="a" * 64,
     )
@@ -204,21 +217,23 @@ def test_monetary_values_minor_unit_boundaries(db_session):
         channel3_product_id="ch3_prod_9988",
         offer_url="https://dell.com/item",
         merchant_domain="dell.com",
-        price_minor=45995,
+        price_cents=45995,
         currency="USD",
         availability="IN_STOCK",
-        canonical_digest="b" * 64,
-        signature_b64="sig_b64_here",
+        digest="b" * 64,
+        signature="sig_b64_here",
+        public_key="pk_here",
         issued_at=now,
         expires_at=now + timedelta(days=1),
     )
+    assert pref.price_cents == 45995
     assert pref.price_minor == 45995
 
     # 4. Payment event cents
     pay_event = audit_repo.record_payment_event(
         idempotency_key="REQ-CENTS-TEST-001",
         event_type="AUTHORIZED",
-        amount=snapshot_price,
+        amount_cents=45995,
         currency="USD",
     )
     assert pay_event.amount_cents == 45995
@@ -237,7 +252,7 @@ def test_verification_events_audit_logging(db_session):
     neg = neg_repo.create_negotiation(
         shopper_id="shopper_gate_audit",
         request_prompt="Check policy gate",
-        budget_amount=Decimal("100.00"),
+        budget_cents=10000,
         currency="USD",
     )
 

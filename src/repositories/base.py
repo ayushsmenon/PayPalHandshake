@@ -45,7 +45,7 @@ class DatabaseSessionManager:
         # Configure engine options
         engine_kwargs: dict = {}
         if self.db_url.startswith("sqlite"):
-            engine_kwargs["connect_args"] = {"check_same_thread": False}
+            engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30.0}
         else:
             engine_kwargs["pool_pre_ping"] = True
 

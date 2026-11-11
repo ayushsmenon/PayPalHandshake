@@ -25,21 +25,33 @@ class NegotiationRepository(BaseRepository):
         self,
         shopper_id: str,
         request_prompt: str,
-        budget_amount: Decimal,
-        currency: str,
         budget_cents: int | None = None,
+        currency_code: str = "USD",
+        currency: str = "USD",
+        budget_amount: Decimal | None = None,
         status: str = "OPEN",
         metadata: dict[str, Any] | None = None,
     ) -> Negotiation:
-        """Creates and persists a new negotiation."""
-        calculated_cents = budget_cents if budget_cents is not None else int(budget_amount * 100)
+        """Creates and persists a new negotiation using integer minor units (budget_cents)."""
+        curr = (currency_code or currency).upper()
+        if budget_cents is not None:
+            cents = budget_cents
+            dec = budget_amount if budget_amount is not None else Decimal(budget_cents) / Decimal(100)
+        elif budget_amount is not None:
+            cents = int(budget_amount * 100)
+            dec = budget_amount
+        else:
+            cents = 0
+            dec = Decimal("0.00")
+
         negotiation = Negotiation(
             shopper_id=shopper_id,
             request_prompt=request_prompt,
-            budget_amount=budget_amount,
-            budget_cents=calculated_cents,
-            budget_amount_cents=calculated_cents,
-            currency=currency.upper(),
+            budget_cents=cents,
+            budget_amount_cents=cents,
+            budget_amount=dec,
+            currency_code=curr,
+            currency=curr,
             status=status,
             metadata_=metadata or {},
         )
@@ -94,25 +106,37 @@ class NegotiationRepository(BaseRepository):
         self,
         negotiation_id: UUID,
         merchant_id: str,
-        offered_price: Decimal,
-        currency: str,
-        offer_hash: str,
+        price_cents: int | None = None,
+        currency_code: str = "USD",
+        currency: str = "USD",
+        offer_hash: str = "",
         product_id: UUID | None = None,
         merchant_name: str | None = None,
-        price_cents: int | None = None,
+        offered_price: Decimal | None = None,
         terms_payload: dict[str, Any] | None = None,
     ) -> OfferSnapshot:
-        """Records an immutable snapshot of an agreed/evaluated offer."""
-        calculated_cents = price_cents if price_cents is not None else int(offered_price * 100)
+        """Records an immutable snapshot of an agreed/evaluated offer using integer minor units."""
+        curr = (currency_code or currency).upper()
+        if price_cents is not None:
+            cents = price_cents
+            dec = offered_price if offered_price is not None else Decimal(price_cents) / Decimal(100)
+        elif offered_price is not None:
+            cents = int(offered_price * 100)
+            dec = offered_price
+        else:
+            cents = 0
+            dec = Decimal("0.00")
+
         snapshot = OfferSnapshot(
             negotiation_id=negotiation_id,
             product_id=product_id,
             merchant_id=merchant_id,
             merchant_name=merchant_name,
-            offered_price=offered_price,
-            price_cents=calculated_cents,
-            offered_price_cents=calculated_cents,
-            currency=currency.upper(),
+            price_cents=cents,
+            offered_price_cents=cents,
+            offered_price=dec,
+            currency_code=curr,
+            currency=curr,
             offer_hash=offer_hash,
             terms_payload=terms_payload or {},
         )
@@ -126,33 +150,59 @@ class NegotiationRepository(BaseRepository):
         channel3_product_id: str,
         offer_url: str,
         merchant_domain: str,
-        price_minor: int,
-        currency: str,
-        availability: str,
-        canonical_digest: str,
-        signature_b64: str,
-        issued_at: datetime,
-        expires_at: datetime,
+        price_cents: int | None = None,
+        price_minor: int | None = None,
+        digest: str = "",
+        canonical_digest: str = "",
+        signature: str = "",
+        signature_b64: str = "",
+        public_key: str = "",
+        public_key_b64: str | None = None,
+        issued_at: datetime | None = None,
+        expires_at: datetime | None = None,
+        protocol_version: str = "v1",
+        schema_version: str = "product-reference.v1",
+        currency_code: str = "USD",
+        currency: str = "USD",
+        availability: str = "IN_STOCK",
+        canonical_category: str | None = None,
+        registry_version: str | None = None,
+        canonical_payload: dict[str, Any] | None = None,
         product_id: UUID | None = None,
         condition: str | None = None,
-        public_key_b64: str | None = None,
     ) -> ProductReference:
-        """Stores a canonical signed product reference conforming to product-reference.v1."""
+        """Stores a canonical signed product reference conforming to product-reference.v1 or v2."""
+        curr = (currency_code or currency).upper()
+        cents = price_cents if price_cents is not None else (price_minor if price_minor is not None else 0)
+        d = digest or canonical_digest
+        sig = signature or signature_b64
+        pk = public_key or (public_key_b64 or "")
+
         ref = ProductReference(
             negotiation_id=negotiation_id,
             product_id=product_id,
+            protocol_version=protocol_version,
+            schema_version=schema_version,
             channel3_product_id=channel3_product_id,
             offer_url=offer_url,
             merchant_domain=merchant_domain,
-            price_minor=price_minor,
-            currency=currency.upper(),
+            canonical_category=canonical_category,
+            registry_version=registry_version,
+            canonical_payload=canonical_payload or {},
+            price_cents=cents,
+            price_minor=cents,
+            currency_code=curr,
+            currency=curr,
             availability=availability,
             condition=condition,
-            canonical_digest=canonical_digest,
-            signature_b64=signature_b64,
-            public_key_b64=public_key_b64,
-            issued_at=issued_at,
-            expires_at=expires_at,
+            digest=d,
+            canonical_digest=d,
+            signature=sig,
+            signature_b64=sig,
+            public_key=pk,
+            public_key_b64=pk,
+            issued_at=issued_at or datetime.now(timezone.utc),
+            expires_at=expires_at or (datetime.now(timezone.utc) + (issued_at - issued_at if issued_at else datetime.now(timezone.utc))),
         )
         self.session.add(ref)
         self.session.flush()

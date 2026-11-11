@@ -47,6 +47,7 @@ from src.models import (
     ProductSchema,
     OfferSnapshotSchema,
     MandateSchema,
+    ConsentEvidenceSchema,
     ProductReferenceSchema,
     MandateConsumptionSchema,
     VerificationEventSchema,
@@ -58,6 +59,7 @@ EXPECTED_TABLES = [
     "products",
     "offer_snapshots",
     "mandates",
+    "consent_evidence",
     "product_references",
     "mandate_consumptions",
     "verification_events",
@@ -80,6 +82,7 @@ def test_sql_migration_files() -> None:
     migration_files = [
         REPO_ROOT / "migrations" / "001_initial_schema.sql",
         REPO_ROOT / "migrations" / "002_protocol_reconcile.sql",
+        REPO_ROOT / "migrations" / "003_durable_consent_and_v2_reconcile.sql",
     ]
 
     combined_code = []
@@ -208,10 +211,16 @@ def test_pydantic_schemas_and_validation() -> None:
         offer_url="https://dell.com/item",
         merchant_domain="dell.com",
         price_minor=45999,
+        price_cents=45999,
         currency="USD",
+        currency_code="USD",
         availability="IN_STOCK",
+        digest="e" * 64,
         canonical_digest="e" * 64,
+        signature="c2lnX2I2NA==",
         signature_b64="c2lnX2I2NA==",
+        public_key="pk_test_channel3",
+        public_key_b64="pk_test_channel3",
         issued_at=now,
         expires_at=now + timedelta(days=1),
     )
@@ -254,6 +263,7 @@ def test_live_postgres_connection(db_url: str) -> None:
     migration_files = [
         REPO_ROOT / "migrations" / "001_initial_schema.sql",
         REPO_ROOT / "migrations" / "002_protocol_reconcile.sql",
+        REPO_ROOT / "migrations" / "003_durable_consent_and_v2_reconcile.sql",
     ]
 
     with engine.connect() as conn:

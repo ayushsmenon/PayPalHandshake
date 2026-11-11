@@ -11,6 +11,7 @@ from .base import (
 )
 from .negotiation_repo import NegotiationRepository
 from .mandate_repo import MandateRepository
+from .consent_repo import ConsentRepository
 from .audit_repo import AuditRepository
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "MandateAlreadyConsumedError",
     "NegotiationRepository",
     "MandateRepository",
+    "ConsentRepository",
     "AuditRepository",
 ]

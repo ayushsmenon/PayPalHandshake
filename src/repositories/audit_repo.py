@@ -44,9 +44,10 @@ class AuditRepository(BaseRepository):
         self,
         idempotency_key: str,
         event_type: str,
-        amount: Decimal,
-        amount_cents: int | None = None,
+        amount_cents: int,
+        currency_code: str = "USD",
         currency: str = "USD",
+        amount: Decimal | None = None,
         negotiation_id: UUID | None = None,
         paypal_order_id: str | None = None,
         paypal_authorization_id: str | None = None,
@@ -55,12 +56,14 @@ class AuditRepository(BaseRepository):
         status: str = "CREATED",
         raw_response_summary: dict[str, Any] | None = None,
     ) -> PaymentEvent:
-        """Appends an immutable payment transaction event.
+        """Appends an immutable payment transaction event using integer minor units.
 
         Enforces replay protection via idempotency_key uniqueness.
         Raises ReplayViolationError if idempotency_key already exists.
         """
-        calculated_cents = amount_cents if amount_cents is not None else int(amount * 100)
+        curr = (currency_code or currency).upper()
+        decimal_amount = amount if amount is not None else Decimal(amount_cents) / Decimal(100)
+
         event = PaymentEvent(
             negotiation_id=negotiation_id,
             idempotency_key=idempotency_key,
@@ -69,19 +72,20 @@ class AuditRepository(BaseRepository):
             paypal_capture_id=paypal_capture_id,
             paypal_payout_batch_id=paypal_payout_batch_id,
             event_type=event_type,
-            amount=amount,
-            amount_cents=calculated_cents,
-            currency=currency.upper(),
+            amount_cents=amount_cents,
+            amount=decimal_amount,
+            currency_code=curr,
+            currency=curr,
             status=status,
             raw_response_summary=raw_response_summary or {},
         )
 
         try:
-            self.session.add(event)
-            self.session.flush()
-            return event
+            with self.session.begin_nested():
+                self.session.add(event)
+                self.session.flush()
+                return event
         except IntegrityError as exc:
-            self.session.rollback()
             raise ReplayViolationError(
                 f"Duplicate payment request detected for idempotency_key '{idempotency_key}'"
             ) from exc
