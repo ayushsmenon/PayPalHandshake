@@ -10,7 +10,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from .models import VerificationCheck, VerificationResult
-from .product_reference import verify_product_reference_signature
+from .product_reference import (
+    SignedProductReferenceV2,
+    verify_product_reference_v2_signature,
+)
 from .versioned_crypto import verify_versioned_signature
 from .versioned_models import CandidateDealV2, MandateV2, PostAuthorizationBindingV1
 
@@ -93,7 +96,9 @@ def _verify_product_references(
         reference = product.product_reference
         if reference is None or now >= reference.reference.expires_at:
             return False
-        if not verify_product_reference_signature(reference, public_key_b64):
+        if not isinstance(reference, SignedProductReferenceV2):
+            return False
+        if not verify_product_reference_v2_signature(reference, public_key_b64):
             return False
         signed = reference.reference
         if signed.channel3_product_id != product.product_identifier:
@@ -103,6 +108,8 @@ def _verify_product_references(
         if signed.currency != candidate.currency or product.offer_url != signed.offer_url:
             return False
         if product.unit_price_cents != signed.price_minor or signed.availability != "InStock":
+            return False
+        if signed.canonical_category not in mandate.allowed_product_categories:
             return False
         referenced_total += signed.price_minor * product.quantity
     return referenced_total == candidate.total_cents

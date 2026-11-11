@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .product_reference import SignedProductReference
+from .product_reference import SignedProductReference, SignedProductReferenceV2
 
 
 class ProductLineV2(BaseModel):
@@ -18,7 +18,7 @@ class ProductLineV2(BaseModel):
     description: str = Field(min_length=1)
     unit_price_cents: int | None = Field(default=None, ge=0)
     offer_url: str | None = Field(default=None, min_length=1)
-    product_reference: SignedProductReference | None = None
+    product_reference: SignedProductReference | SignedProductReferenceV2 | None = None
 
 
 class MandateV2(BaseModel):

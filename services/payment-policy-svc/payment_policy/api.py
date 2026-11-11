@@ -20,8 +20,11 @@ from .versioned_models import (
 from .product_reference import (
     ProductReferenceIssuanceError,
     SignedProductReference,
+    SignedProductReferenceV2,
     issue_product_reference,
+    issue_product_reference_v2,
 )
+from .category_registry import load_product_category_registry
 
 
 class ProductCandidate(BaseModel):
@@ -47,6 +50,12 @@ class ProductReferenceIssuanceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     references: list[SignedProductReference]
+
+
+class ProductReferenceV2IssuanceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    references: list[SignedProductReferenceV2]
 
 
 class DryRunRequest(BaseModel):
@@ -76,6 +85,7 @@ def create_app(
     process_b_client: ProcessBClient | None = None,
     consent_provider: ConsentEvidenceProvider | None = None,
     environment: str = "production",
+    category_registry=None,
 ) -> FastAPI:
     if environment == "production" and paypal_adapter is not None:
         from .paypal_adapter import MockPayPalAdapter
@@ -87,6 +97,7 @@ def create_app(
         title="PAYPAL HANDSHAKE Payment Policy Service",
         description="Internal read-only decision boundary for verified payment data.",
     )
+    registry = category_registry or load_product_category_registry()
 
     @app.post("/internal/v1/payment-decisions/dry-run", response_model=DryRunResponse)
     def dry_run(request: DryRunRequest) -> DryRunResponse:
@@ -186,6 +197,31 @@ def create_app(
                 ) from error
             references.append(reference)
         return ProductReferenceIssuanceResponse(references=references)
+
+    @app.post(
+        "/internal/v2/product-references/issue",
+        response_model=ProductReferenceV2IssuanceResponse,
+    )
+    def issue_product_references_v2(
+        request: ProductReferenceIssuanceRequest,
+    ) -> ProductReferenceV2IssuanceResponse:
+        references = []
+        for candidate in request.products:
+            try:
+                reference = issue_product_reference_v2(
+                    candidate.product_identifier,
+                    candidate.merchant_domain,
+                    _price_cents_as_amount(candidate.price_cents),
+                    candidate.currency,
+                    registry=registry,
+                )
+            except ProductReferenceIssuanceError as error:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A product candidate could not be independently verified.",
+                ) from error
+            references.append(reference)
+        return ProductReferenceV2IssuanceResponse(references=references)
 
     return app
 

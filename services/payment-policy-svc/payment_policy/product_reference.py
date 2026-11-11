@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -12,11 +13,13 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
 PRODUCT_REFERENCE_DOMAIN = b"PAYPAL-HANDSHAKE/PRODUCT-REFERENCE/v1\0"
+PRODUCT_REFERENCE_V2_DOMAIN = b"PAYPAL-HANDSHAKE/PRODUCT-REFERENCE/v2\0"
 CHANNEL3_PRODUCTS_URL = "https://api.trychannel3.com/v1/products"
 SUPPORTED_CURRENCY_EXPONENTS = {"USD": 2}
 
@@ -70,6 +73,64 @@ class SignedProductReference(BaseModel):
     signature_b64: str = Field(min_length=1)
 
 
+class ProductReferenceV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    schema_version: str = "product-reference.v2"
+    channel3_product_id: str = Field(min_length=1)
+    offer_url: str = Field(min_length=1)
+    merchant_domain: str = Field(min_length=1)
+    price_minor: int = Field(ge=0)
+    currency: str = Field(min_length=3, max_length=3)
+    availability: str = Field(min_length=1)
+    condition: str | None = None
+    issued_at: datetime
+    expires_at: datetime
+    canonical_category: str = Field(min_length=1)
+    registry_version: str = Field(min_length=1)
+
+    @field_validator("currency")
+    @classmethod
+    def supported_v2_currency(cls, value: str) -> str:
+        if value not in SUPPORTED_CURRENCY_EXPONENTS:
+            raise ValueError("unsupported product-reference currency")
+        return value
+
+    @field_validator("schema_version")
+    @classmethod
+    def supported_v2_schema_version(cls, value: str) -> str:
+        if value != "product-reference.v2":
+            raise ValueError("unsupported product-reference schema version")
+        return value
+
+    @field_validator("canonical_category")
+    @classmethod
+    def canonical_category_format(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9]+(?:[.-][a-z0-9]+)*", value):
+            raise ValueError("canonical_category must use lowercase identifier syntax")
+        return value
+
+    @field_validator("offer_url")
+    @classmethod
+    def v2_offer_url_must_be_http(cls, value: str) -> str:
+        if not value.startswith(("https://", "http://")):
+            raise ValueError("offer_url must be an HTTP(S) URL")
+        return value
+
+    @model_validator(mode="after")
+    def valid_v2_expiry(self) -> ProductReferenceV2:
+        if self.expires_at <= self.issued_at:
+            raise ValueError("product-reference expires_at must be later than issued_at")
+        return self
+
+
+class SignedProductReferenceV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reference: ProductReferenceV2
+    signature_b64: str = Field(min_length=1)
+
+
 class ProductReferenceIssuanceError(ValueError):
     """Raised when Channel3 cannot support a safe exact reference."""
 
@@ -96,6 +157,28 @@ def sign_product_reference(
     )
 
 
+def canonical_product_reference_v2_bytes(reference: ProductReferenceV2) -> bytes:
+    import json
+
+    return PRODUCT_REFERENCE_V2_DOMAIN + json.dumps(
+        reference.model_dump(mode="json"),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def sign_product_reference_v2(
+    reference: ProductReferenceV2,
+    private_key: Ed25519PrivateKey,
+) -> SignedProductReferenceV2:
+    signature = private_key.sign(canonical_product_reference_v2_bytes(reference))
+    return SignedProductReferenceV2(
+        reference=reference,
+        signature_b64=base64.b64encode(signature).decode("ascii"),
+    )
+
+
 def verify_product_reference_signature(
     signed_reference: SignedProductReference,
     public_key_b64: str,
@@ -108,6 +191,24 @@ def verify_product_reference_signature(
         Ed25519PublicKey.from_public_bytes(public_key).verify(
             signature,
             canonical_product_reference_bytes(signed_reference.reference),
+        )
+    except (ValueError, TypeError, binascii.Error, InvalidSignature):
+        return False
+    return True
+
+
+def verify_product_reference_v2_signature(
+    signed_reference: SignedProductReferenceV2,
+    public_key_b64: str,
+) -> bool:
+    try:
+        public_key = base64.b64decode(public_key_b64, validate=True)
+        signature = base64.b64decode(signed_reference.signature_b64, validate=True)
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        Ed25519PublicKey.from_public_bytes(public_key).verify(
+            signature,
+            canonical_product_reference_v2_bytes(signed_reference.reference),
         )
     except (ValueError, TypeError, binascii.Error):
         return False
@@ -216,3 +317,80 @@ def issue_product_reference(
             "Channel3 offer did not contain valid reference fields."
         ) from error
     return sign_product_reference(reference, load_signing_private_key(values))
+
+
+def issue_product_reference_v2(
+    product_id: str,
+    expected_merchant: str,
+    expected_price: str,
+    expected_currency: str,
+    *,
+    registry,
+    environment: dict[str, str] | None = None,
+    now: datetime | None = None,
+    ttl: timedelta = timedelta(minutes=15),
+) -> SignedProductReferenceV2:
+    from .category_registry import ProductCategoryRegistryError
+    from .signing import load_signing_private_key
+
+    values = os.environ if environment is None else environment
+    api_key = values.get("CHANNEL3_API_KEY", "").strip()
+    if not api_key:
+        raise ProductReferenceIssuanceError("CHANNEL3_API_KEY is missing.")
+    if expected_currency not in SUPPORTED_CURRENCY_EXPONENTS:
+        raise ProductReferenceIssuanceError("Unsupported expected currency.")
+    expected_minor = _price_minor(expected_price, expected_currency)
+    try:
+        response = httpx.get(
+            f"{CHANNEL3_PRODUCTS_URL}/{quote(product_id, safe='')}",
+            headers={"x-api-key": api_key},
+            timeout=httpx.Timeout(15.0, connect=5.0),
+        )
+        response.raise_for_status()
+        product = response.json()
+    except (httpx.HTTPError, ValueError) as error:
+        raise ProductReferenceIssuanceError(
+            "Channel3 product verification failed."
+        ) from error
+    if not isinstance(product, dict) or product.get("id") != product_id:
+        raise ProductReferenceIssuanceError("Channel3 response did not match the requested product.")
+    try:
+        reviewed = registry.match(product, expected_merchant)
+    except ProductCategoryRegistryError as error:
+        raise ProductReferenceIssuanceError(
+            "Product category evidence is unavailable or does not match the registry."
+        ) from error
+    offers = product.get("offers")
+    if not isinstance(offers, list):
+        raise ProductReferenceIssuanceError("Channel3 response did not include offers.")
+    matches = [
+        offer for offer in offers
+        if isinstance(offer, dict)
+        and isinstance(offer.get("price"), dict)
+        and offer.get("domain") == expected_merchant
+        and offer["price"].get("currency") == expected_currency
+        and offer.get("availability") == "InStock"
+        and isinstance(offer.get("url"), str)
+        and offer["url"].startswith(("https://", "http://"))
+        and _price_minor(offer["price"].get("price"), expected_currency) == expected_minor
+    ]
+    if len(matches) != 1:
+        raise ProductReferenceIssuanceError(
+            "No unique available offer matched merchant, currency, and expected price."
+        )
+    issued_at = now or datetime.now(timezone.utc)
+    reference = ProductReferenceV2(
+        schema_version="product-reference.v2",
+        channel3_product_id=product_id,
+        offer_url=matches[0]["url"],
+        merchant_domain=expected_merchant,
+        price_minor=expected_minor,
+        currency=expected_currency,
+        availability="InStock",
+        condition=matches[0].get("condition"),
+        issued_at=issued_at,
+        expires_at=issued_at + ttl,
+        canonical_category=reviewed.canonical_category,
+        registry_version=registry.version,
+    )
+    return sign_product_reference_v2(reference, load_signing_private_key(values))

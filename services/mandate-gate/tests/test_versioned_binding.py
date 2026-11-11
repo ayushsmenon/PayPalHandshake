@@ -9,11 +9,11 @@ from fastapi.testclient import TestClient
 from mandate_gate.api import app
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mandate_gate.models import ProductLine
+from mandate_gate.models import ProductLineV2
 from mandate_gate.product_reference import (
-    ProductReference,
-    SignedProductReference,
-    canonical_product_reference_bytes,
+    ProductReferenceV2,
+    SignedProductReferenceV2,
+    canonical_product_reference_v2_bytes,
 )
 from mandate_gate.versioned_crypto import (
     canonical_mandate_v2_bytes,
@@ -65,8 +65,8 @@ def signed_objects() -> tuple[
         issued_at=NOW - timedelta(minutes=1),
         expires_at=NOW + timedelta(hours=1),
     )
-    reference = ProductReference(
-        schema_version="product-reference.v1",
+    reference = ProductReferenceV2(
+        schema_version="product-reference.v2",
         channel3_product_id="P-1",
         offer_url="https://newegg.com/p/P-1",
         merchant_domain="newegg.com",
@@ -76,11 +76,13 @@ def signed_objects() -> tuple[
         condition="new",
         issued_at=NOW - timedelta(minutes=1),
         expires_at=NOW + timedelta(hours=1),
+        canonical_category="electronics",
+        registry_version="test-1",
     )
-    signed_reference = SignedProductReference(
+    signed_reference = SignedProductReferenceV2(
         reference=reference,
         signature_b64=base64.b64encode(
-            private_key.sign(canonical_product_reference_bytes(reference))
+            private_key.sign(canonical_product_reference_v2_bytes(reference))
         ).decode(),
     )
     candidate = CandidateDealV2(
@@ -90,7 +92,7 @@ def signed_objects() -> tuple[
         total_cents=41850,
         currency="USD",
         products=[
-            ProductLine(
+            ProductLineV2(
                 product_identifier="P-1",
                 quantity=1,
                 description="Monitor",
