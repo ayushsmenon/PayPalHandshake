@@ -1,24 +1,5 @@
--- ============================================================================
--- Migration: 003_durable_consent_and_v2_reconcile.sql
--- Description: Durable Consent Evidence, Protocol v2 Alignment, and Strict Consumption Safeguards
--- Platform: PayPal Handshake (Autonomous Agent Commerce & Verification)
--- Target Database: PostgreSQL 16
---
--- STRICT INVARIANTS ENFORCED:
--- 1. SIGNED DATA IS AUTHORITATIVE: No synthetic digests or invented hashes.
--- 2. FAIL CLOSED: Missing consent or digest verification prevents execution.
--- 3. MONEY IN INTEGER MINOR UNITS: All monetary columns are BIGINT cents accompanied by currency_code.
--- 4. IDENTITY DISTINCTIONS: Channel3 product IDs, merchant domains, display names, and payee IDs kept distinct.
--- 5. ZERO SECRET LEAKAGE: No client secrets, access tokens, or private Ed25519 signing keys.
--- 6. DURABLE CONSENT: Single-use consent claim per mandate enforced via UNIQUE(mandate_id).
--- ============================================================================
-
--- Ensure pgcrypto extension is available
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- ----------------------------------------------------------------------------
--- 1. Ensure Unique Constraint on mandates(mandate_id) for Foreign Key References
--- ----------------------------------------------------------------------------
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -28,11 +9,6 @@ BEGIN
     END IF;
 END $$;
 
--- ----------------------------------------------------------------------------
--- 2. Ensure currency_code and integer minor unit columns across all core tables
--- ----------------------------------------------------------------------------
-
--- negotiations: currency_code
 ALTER TABLE negotiations
     ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3);
 
@@ -40,7 +16,6 @@ UPDATE negotiations
 SET currency_code = currency
 WHERE currency_code IS NULL AND currency IS NOT NULL;
 
--- offer_snapshots: currency_code
 ALTER TABLE offer_snapshots
     ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3);
 
@@ -48,7 +23,6 @@ UPDATE offer_snapshots
 SET currency_code = currency
 WHERE currency_code IS NULL AND currency IS NOT NULL;
 
--- mandates: currency_code
 ALTER TABLE mandates
     ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3);
 
@@ -56,7 +30,6 @@ UPDATE mandates
 SET currency_code = currency
 WHERE currency_code IS NULL AND currency IS NOT NULL;
 
--- payment_events: currency_code
 ALTER TABLE payment_events
     ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3);
 
@@ -64,11 +37,6 @@ UPDATE payment_events
 SET currency_code = currency
 WHERE currency_code IS NULL AND currency IS NOT NULL;
 
--- ----------------------------------------------------------------------------
--- 3. Table: consent_evidence
--- Purpose: Durable, single-use consent evidence bound to a signed mandate.
--- Enforces: Exactly ONE valid consent claim per mandate via UNIQUE(mandate_id).
--- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS consent_evidence (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     evidence_id VARCHAR(128) NOT NULL,
@@ -99,10 +67,6 @@ CREATE INDEX IF NOT EXISTS idx_consent_evidence_mandate_lookup ON consent_eviden
 CREATE INDEX IF NOT EXISTS idx_consent_evidence_negotiation ON consent_evidence (negotiation_id);
 CREATE INDEX IF NOT EXISTS idx_consent_evidence_shopper ON consent_evidence (shopper_id);
 
--- ----------------------------------------------------------------------------
--- 4. Table: product_references (Protocol v2 Alignment)
--- Purpose: Canonical, signed product references supporting v1 and v2 protocols.
--- ----------------------------------------------------------------------------
 ALTER TABLE product_references
     ADD COLUMN IF NOT EXISTS protocol_version VARCHAR(16) NOT NULL DEFAULT 'v1',
     ADD COLUMN IF NOT EXISTS canonical_category VARCHAR(128),
@@ -114,7 +78,6 @@ ALTER TABLE product_references
     ADD COLUMN IF NOT EXISTS price_cents BIGINT DEFAULT 0,
     ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3);
 
--- Backfill v1 fields into standard v2-aligned columns
 UPDATE product_references
 SET digest = canonical_digest
 WHERE digest IS NULL AND canonical_digest IS NOT NULL;
@@ -149,20 +112,12 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_product_references_version ON product_references (protocol_version);
 CREATE INDEX IF NOT EXISTS idx_product_references_category ON product_references (canonical_category);
 
--- ----------------------------------------------------------------------------
--- 5. Table: mandate_consumptions (Consumption Safeguards)
--- Ensure mandate_id VARCHAR(128) references mandates(mandate_id) and transaction_id exists.
--- ----------------------------------------------------------------------------
-
--- Drop old UUID foreign key if present
 ALTER TABLE mandate_consumptions
     DROP CONSTRAINT IF EXISTS mandate_consumptions_mandate_id_fkey;
 
--- Change mandate_id type to VARCHAR(128)
 ALTER TABLE mandate_consumptions
     ALTER COLUMN mandate_id TYPE VARCHAR(128) USING mandate_id::text;
 
--- Add transaction_id column
 ALTER TABLE mandate_consumptions
     ADD COLUMN IF NOT EXISTS transaction_id VARCHAR(128);
 
@@ -173,7 +128,6 @@ WHERE transaction_id IS NULL;
 ALTER TABLE mandate_consumptions
     ALTER COLUMN transaction_id SET NOT NULL;
 
--- Bind foreign key to mandates(mandate_id)
 DO $$
 BEGIN
     IF NOT EXISTS (

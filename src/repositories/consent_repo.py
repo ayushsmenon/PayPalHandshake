@@ -1,7 +1,6 @@
-"""Durable consent evidence repository matching ConsentStore Protocol."""
-
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -18,26 +17,7 @@ from src.repositories.base import (
 
 
 class ConsentRepository(BaseRepository):
-    """Durable consent store adapter enforcing atomic single-use claims and zero synthetic fallbacks."""
-
     def record_and_claim(self, evidence: Any) -> bool:
-        """Atomically record evidence and claim single-use consent for a mandate.
-
-        Args:
-            evidence: An instance of MandateConsentEvidence, ConsentEvidenceSchema,
-                      or equivalent object/dict containing consent claims.
-
-        Returns:
-            True if consent was newly recorded and claimed.
-            False if consent for this mandate or evidence_id was already claimed/replayed.
-
-        Raises:
-            ValueError: If evidence_id, mandate_id, or mandate_digest is missing, empty, or synthetic.
-            NotFoundError: If the target mandate does not exist.
-            PersistenceError: If the mandate has no authoritative digest or if digest mismatches.
-            Exception: Any database connection/execution error propagates immediately (fails closed).
-        """
-        # 1. Extract fields supporting both protocol and model field naming
         if isinstance(evidence, dict):
             evidence_id = evidence.get("consent_event_id") or evidence.get("evidence_id")
             mandate_id = evidence.get("mandate_id")
@@ -61,7 +41,6 @@ class ConsentRepository(BaseRepository):
                 else (vars(evidence) if hasattr(evidence, "__dict__") else {})
             )
 
-        # 2. Strict Zero Synthetic / Fail Closed Validation
         if not evidence_id or not str(evidence_id).strip():
             raise ValueError("Missing or empty evidence_id: consent cannot be claimed without valid event identity")
 
@@ -82,7 +61,6 @@ class ConsentRepository(BaseRepository):
         elif isinstance(approved_at, str):
             approved_at = datetime.fromisoformat(approved_at)
 
-        # Ensure negotiation_id is a UUID instance
         if isinstance(negotiation_id_raw, str):
             negotiation_id = UUID(negotiation_id_raw)
         elif isinstance(negotiation_id_raw, UUID):
@@ -90,7 +68,6 @@ class ConsentRepository(BaseRepository):
         else:
             raise ValueError("negotiation_id must be a valid UUID or UUID string")
 
-        # 3. Validate against target mandate before attempting claim (fail closed)
         stmt = select(Mandate).where(Mandate.mandate_id == mandate_id)
         mandate = self.session.scalar(stmt)
         if not mandate:
@@ -107,8 +84,6 @@ class ConsentRepository(BaseRepository):
                 f"Mandate digest mismatch for '{mandate_id}': expected '{mandate.mandate_digest}', got '{mandate_digest}'"
             )
 
-        # 4. Atomic claim pattern using nested transaction (savepoint)
-        # Guarantees caller-owned session is never committed or rolled back
         insert_stmt = text(
             """
             INSERT INTO consent_evidence (
@@ -126,11 +101,7 @@ class ConsentRepository(BaseRepository):
 
         record_id = uuid4()
         now = datetime.now(timezone.utc)
-
-        # Handle JSON serialization for payload
-        import json
         payload_data = payload if isinstance(payload, dict) else {}
-        # In SQLite, bind as JSON text; in Postgres, JSONB binds directly or as serialized text
         payload_bind = json.dumps(payload_data, default=str)
 
         params = {
@@ -151,14 +122,11 @@ class ConsentRepository(BaseRepository):
                 result = self.session.execute(insert_stmt, params)
                 row = result.fetchone()
                 if row is None:
-                    # ON CONFLICT (mandate_id) DO NOTHING fired -> already claimed
                     return False
                 return True
         except IntegrityError:
-            # Replay of existing evidence_id or duplicate constraint caught cleanly by savepoint
             return False
 
     def get_consent_for_mandate(self, mandate_id: str) -> ConsentEvidence | None:
-        """Retrieves claimed consent evidence for a given mandate ID."""
         stmt = select(ConsentEvidence).where(ConsentEvidence.mandate_id == mandate_id)
         return self.session.scalar(stmt)

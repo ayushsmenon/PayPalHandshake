@@ -1,5 +1,3 @@
-"""Isolated repository and persistence access layer for PayPal Agent Platform."""
-
 from .base import (
     BaseRepository,
     DatabaseSessionManager,

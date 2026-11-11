@@ -1,5 +1,3 @@
-"""Standalone test suite verifying SQLAlchemy declarative models, DDL generation, and schemas."""
-
 from __future__ import annotations
 
 import sys
@@ -42,7 +40,6 @@ from src.repositories import DatabaseSessionManager
 
 @pytest.fixture
 def db_manager():
-    """In-memory SQLite session manager with full model tables created."""
     manager = DatabaseSessionManager("sqlite:///:memory:")
     manager.create_tables()
     yield manager
@@ -50,7 +47,6 @@ def db_manager():
 
 
 def test_models_metadata_completeness():
-    """Verifies all expected core, reconciled, and consent tables exist in SQLAlchemy metadata."""
     expected_tables = {
         "negotiations",
         "products",
@@ -67,20 +63,16 @@ def test_models_metadata_completeness():
 
 
 def test_postgresql_dialect_ddl_generation():
-    """Verifies that all models cleanly generate DDL under PostgreSQL 16 dialect without errors."""
     dialect = postgresql.dialect()
     for table_name, table in Base.metadata.tables.items():
         ddl = str(CreateTable(table).compile(dialect=dialect))
         assert table_name in ddl.lower()
-        # Verify no secret keywords in generated DDL statements
         for forbidden in ["client_secret", "private_key", "secret_key"]:
             assert forbidden not in ddl.lower(), f"Forbidden keyword '{forbidden}' in table '{table_name}' DDL"
 
 
 def test_sqlite_session_create_all_and_query(db_manager: DatabaseSessionManager):
-    """Verifies that models create cleanly and allow session operations against a test session."""
     with db_manager.session_scope() as session:
-        # Create a negotiation
         neg = Negotiation(
             shopper_id="shopper_baseline_01",
             request_prompt="Search monitor under $400",
@@ -92,7 +84,6 @@ def test_sqlite_session_create_all_and_query(db_manager: DatabaseSessionManager)
         session.add(neg)
         session.flush()
 
-        # Create a product
         prod = Product(
             negotiation_id=neg.id,
             external_product_id="ch3_456",
@@ -102,7 +93,6 @@ def test_sqlite_session_create_all_and_query(db_manager: DatabaseSessionManager)
         session.add(prod)
         session.flush()
 
-        # Create a product reference
         now = datetime.now(timezone.utc)
         pref = ProductReference(
             negotiation_id=neg.id,
@@ -124,7 +114,6 @@ def test_sqlite_session_create_all_and_query(db_manager: DatabaseSessionManager)
         session.add(pref)
         session.flush()
 
-        # Query back and verify relations
         assert neg.id is not None
         assert len(neg.products) == 1
         assert neg.products[0].title == "Dell 27 Monitor"
@@ -133,7 +122,6 @@ def test_sqlite_session_create_all_and_query(db_manager: DatabaseSessionManager)
 
 
 def test_pydantic_schemas_validation():
-    """Verifies Pydantic v2 schemas instantiation and constraints."""
     now = datetime.now(timezone.utc)
     neg_id = uuid4()
 

@@ -1,21 +1,3 @@
-"""PostgreSQL ORM models and Pydantic schemas for the PayPal Agent Platform.
-
-Architecture Roles & Invariants:
-- Process A / Shopper Intent: Tracks shopper constraints, prompt, budget (cents & currency_code).
-- Process B / Negotiation: Tracks products, quotes, and cryptographic offer snapshots.
-- Process C / Payment Policy Service: Audit logs for PayPal Orders v2, Authorizations,
-  Captures, and Payouts with idempotency keys for replay protection.
-- Verification Gates: Audit log of deterministic gate decisions and digests.
-- Protocol Alignment: mandate.v2, product-reference.v1 & v2, durable consent evidence.
-
-STRICT INVARIANTS:
-- SIGNED DATA IS AUTHORITATIVE: No synthetic digests or invented hashes.
-- ZERO TOLERANCE FOR SYNTHETIC FALLBACKS: Missing or empty digests must immediately fail closed.
-- FAIL CLOSED: Missing consent, identity, or verification evidence blocks execution.
-- MONEY IN INTEGER MINOR UNITS: Exclusively BIGINT cents accompanied by currency_code.
-- ZERO SECRET LEAKAGE: No PayPal client secrets, access tokens, or private Ed25519 signing keys.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -33,7 +15,6 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
@@ -41,33 +22,21 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
-# ============================================================================
-# SQLite Compatibility Compilation Hooks
-# Allows models to run seamlessly in local test suites with SQLite :memory:
-# without altering PostgreSQL native DDL.
-# ============================================================================
-
 @compiles(PG_UUID, "sqlite")
-def _compile_pg_uuid_sqlite(type_, compiler, **kw):  # type: ignore[no-untyped-def]
+def _compile_pg_uuid_sqlite(type_, compiler, **kw):
     return "VARCHAR(36)"
 
 
 @compiles(JSONB, "sqlite")
-def _compile_jsonb_sqlite(type_, compiler, **kw):  # type: ignore[no-untyped-def]
+def _compile_jsonb_sqlite(type_, compiler, **kw):
     return "TEXT"
 
-
-# ============================================================================
-# SQLAlchemy Declarative Base & Models
-# ============================================================================
 
 class Base(DeclarativeBase):
     pass
 
 
 class Negotiation(Base):
-    """Stores shopper intent, budget constraints, currency code, and negotiation lifecycle status."""
-
     __tablename__ = "negotiations"
 
     id: Mapped[UUID] = mapped_column(
@@ -79,7 +48,6 @@ class Negotiation(Base):
     request_prompt: Mapped[str] = mapped_column(
         Text, nullable=False
     )
-    # Integer minor units (cents) for exact financial comparison
     budget_cents: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0
     )
@@ -111,7 +79,6 @@ class Negotiation(Base):
         nullable=False,
     )
 
-    # Relationships (lazy loading by default)
     products: Mapped[list["Product"]] = relationship(
         back_populates="negotiation", cascade="all, delete-orphan", lazy="select"
     )
@@ -154,8 +121,6 @@ class Negotiation(Base):
 
 
 class Product(Base):
-    """Tracks items discovered or evaluated during the negotiation."""
-
     __tablename__ = "products"
 
     id: Mapped[UUID] = mapped_column(
@@ -183,7 +148,6 @@ class Product(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
 
-    # Relationships
     negotiation: Mapped["Negotiation"] = relationship(
         back_populates="products", lazy="select"
     )
@@ -196,8 +160,6 @@ class Product(Base):
 
 
 class OfferSnapshot(Base):
-    """Immutable record of merchant, price, currency, and terms frozen at selection/agreement time."""
-
     __tablename__ = "offer_snapshots"
 
     id: Mapped[UUID] = mapped_column(
@@ -221,7 +183,6 @@ class OfferSnapshot(Base):
     merchant_name: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
-    # Minor integer units
     price_cents: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0
     )
@@ -247,7 +208,6 @@ class OfferSnapshot(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
 
-    # Relationships
     negotiation: Mapped["Negotiation"] = relationship(
         back_populates="offer_snapshots", lazy="select"
     )
@@ -262,12 +222,6 @@ class OfferSnapshot(Base):
 
 
 class Mandate(Base):
-    """Signed shopper spending authorizations aligned with mandate.v2 protocol.
-
-    SECURITY INVARIANT: Contains NO private keys. Only Ed25519 public keys and signatures.
-    Replay protection supported by unique mandate_id, digest, consent evidence, and consumption logging.
-    """
-
     __tablename__ = "mandates"
 
     id: Mapped[UUID] = mapped_column(
@@ -279,7 +233,6 @@ class Mandate(Base):
         nullable=False,
         index=True,
     )
-    # mandate.v2 explicit protocol fields
     mandate_id: Mapped[str] = mapped_column(
         String(128), unique=True, nullable=False, index=True
     )
@@ -341,7 +294,6 @@ class Mandate(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    # Relationships
     negotiation: Mapped["Negotiation"] = relationship(
         back_populates="mandates", lazy="select"
     )
@@ -360,11 +312,6 @@ class Mandate(Base):
 
 
 class ConsentEvidence(Base):
-    """Durable consent evidence authorized by the shopper for a specific mandate.
-
-    Enforces exactly one single-use consent claim per mandate via unique constraint on mandate_id.
-    """
-
     __tablename__ = "consent_evidence"
 
     id: Mapped[UUID] = mapped_column(
@@ -405,7 +352,6 @@ class ConsentEvidence(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
 
-    # Relationships
     mandate: Mapped["Mandate"] = relationship(
         back_populates="consent_evidence", lazy="select"
     )
@@ -419,8 +365,6 @@ class ConsentEvidence(Base):
 
 
 class ProductReference(Base):
-    """Canonical, signed product reference conforming to product-reference.v1 and v2."""
-
     __tablename__ = "product_references"
 
     id: Mapped[UUID] = mapped_column(
@@ -462,7 +406,6 @@ class ProductReference(Base):
     canonical_payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
-    # Integer minor units
     price_cents: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0
     )
@@ -509,7 +452,6 @@ class ProductReference(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    # Relationships
     negotiation: Mapped["Negotiation"] = relationship(
         back_populates="product_references", lazy="select"
     )
@@ -549,8 +491,6 @@ class ProductReference(Base):
 
 
 class MandateConsumption(Base):
-    """Enforces strict single-use mandate consumption replay prevention."""
-
     __tablename__ = "mandate_consumptions"
 
     id: Mapped[UUID] = mapped_column(
@@ -586,15 +526,12 @@ class MandateConsumption(Base):
         JSONB, nullable=False, default=dict
     )
 
-    # Relationships
     mandate: Mapped["Mandate"] = relationship(
         back_populates="consumptions", lazy="select"
     )
 
 
 class VerificationEvent(Base):
-    """Immutable audit log of all deterministic gate evaluations."""
-
     __tablename__ = "verification_events"
 
     id: Mapped[UUID] = mapped_column(
@@ -628,7 +565,6 @@ class VerificationEvent(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
 
-    # Relationships
     negotiation: Mapped["Negotiation | None"] = relationship(
         back_populates="verification_events", lazy="select"
     )
@@ -639,12 +575,6 @@ class VerificationEvent(Base):
 
 
 class PaymentEvent(Base):
-    """Immutable transaction log for PayPal Orders v2, Authorizations, Captures, and Payouts.
-
-    REPLAY PROTECTION: Enforces uniqueness on idempotency_key (PayPal-Request-Id).
-    SECURITY INVARIANT: NO PayPal credentials, client secrets, or private auth tokens.
-    """
-
     __tablename__ = "payment_events"
 
     id: Mapped[UUID] = mapped_column(
@@ -696,7 +626,6 @@ class PaymentEvent(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
 
-    # Relationships
     negotiation: Mapped["Negotiation | None"] = relationship(
         back_populates="payment_events", lazy="select"
     )
@@ -706,10 +635,6 @@ class PaymentEvent(Base):
         CheckConstraint("length(currency_code) = 3", name="chk_payment_events_currency_len"),
     )
 
-
-# ============================================================================
-# Pydantic v2 Models (DTO / Serializers / Validation)
-# ============================================================================
 
 class NegotiationSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
@@ -763,7 +688,7 @@ class MandateSchema(BaseModel):
 
     id: UUID = Field(default_factory=uuid4)
     negotiation_id: UUID
-    mandate_id: str = Field(min_length=1, max_length=128)
+    mandate_id: str = Field(default_factory=lambda: f"mnd_{uuid4().hex[:12]}", min_length=1, max_length=128)
     schema_version: str = Field(default="mandate.v2", max_length=32)
     paypal_order_id: str | None = Field(default=None, max_length=128)
     authorized_cap_cents: int = Field(default=0, ge=0)
@@ -831,7 +756,7 @@ class ProductReferenceSchema(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @classmethod
-    def __get_validators__(cls):  # type: ignore[no-untyped-def]
+    def __get_validators__(cls):
         yield cls.validate
 
     @classmethod

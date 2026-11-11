@@ -1,5 +1,3 @@
-"""Repository for negotiations, products, offer snapshots, and product references."""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -19,8 +17,6 @@ from src.repositories.base import BaseRepository, NotFoundError
 
 
 class NegotiationRepository(BaseRepository):
-    """CRUD operations and query patterns for negotiations and catalog artifacts."""
-
     def create_negotiation(
         self,
         shopper_id: str,
@@ -32,7 +28,6 @@ class NegotiationRepository(BaseRepository):
         status: str = "OPEN",
         metadata: dict[str, Any] | None = None,
     ) -> Negotiation:
-        """Creates and persists a new negotiation using integer minor units (budget_cents)."""
         curr = (currency_code or currency).upper()
         if budget_cents is not None:
             cents = budget_cents
@@ -60,12 +55,10 @@ class NegotiationRepository(BaseRepository):
         return negotiation
 
     def get_negotiation(self, negotiation_id: UUID) -> Negotiation | None:
-        """Retrieves a negotiation by its primary UUID."""
         stmt = select(Negotiation).where(Negotiation.id == negotiation_id)
         return self.session.scalar(stmt)
 
     def update_status(self, negotiation_id: UUID, new_status: str) -> Negotiation:
-        """Updates the lifecycle status of a negotiation."""
         negotiation = self.get_negotiation(negotiation_id)
         if not negotiation:
             raise NotFoundError(f"Negotiation with id {negotiation_id} not found")
@@ -81,7 +74,6 @@ class NegotiationRepository(BaseRepository):
         description: str | None = None,
         catalog_metadata: dict[str, Any] | None = None,
     ) -> Product:
-        """Associates a discovered product with a negotiation."""
         product = Product(
             negotiation_id=negotiation_id,
             external_product_id=external_product_id,
@@ -94,7 +86,6 @@ class NegotiationRepository(BaseRepository):
         return product
 
     def get_products_for_negotiation(self, negotiation_id: UUID) -> list[Product]:
-        """Lists all products discovered for a negotiation."""
         stmt = (
             select(Product)
             .where(Product.negotiation_id == negotiation_id)
@@ -115,7 +106,6 @@ class NegotiationRepository(BaseRepository):
         offered_price: Decimal | None = None,
         terms_payload: dict[str, Any] | None = None,
     ) -> OfferSnapshot:
-        """Records an immutable snapshot of an agreed/evaluated offer using integer minor units."""
         curr = (currency_code or currency).upper()
         if price_cents is not None:
             cents = price_cents
@@ -171,7 +161,6 @@ class NegotiationRepository(BaseRepository):
         product_id: UUID | None = None,
         condition: str | None = None,
     ) -> ProductReference:
-        """Stores a canonical signed product reference conforming to product-reference.v1 or v2."""
         curr = (currency_code or currency).upper()
         cents = price_cents if price_cents is not None else (price_minor if price_minor is not None else 0)
         d = digest or canonical_digest
@@ -209,7 +198,6 @@ class NegotiationRepository(BaseRepository):
         return ref
 
     def get_product_references(self, negotiation_id: UUID) -> list[ProductReference]:
-        """Returns all canonical product references registered for a negotiation."""
         stmt = (
             select(ProductReference)
             .where(ProductReference.negotiation_id == negotiation_id)

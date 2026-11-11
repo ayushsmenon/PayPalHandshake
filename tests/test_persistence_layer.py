@@ -1,5 +1,3 @@
-"""Unit and failure-mode tests for the isolated repository and persistence layer."""
-
 from __future__ import annotations
 
 import sys
@@ -28,7 +26,6 @@ from src.repositories import (
 
 @pytest.fixture
 def db_session():
-    """Provides a transactional session connected to an in-memory test database."""
     manager = DatabaseSessionManager("sqlite:///:memory:")
     manager.create_tables()
     with manager.session_scope() as session:
@@ -36,16 +33,10 @@ def db_session():
     manager.drop_tables()
 
 
-# ============================================================================
-# Failure Mode Test 1: Replay Protection on Payment Events (Duplicate Idempotency Key)
-# ============================================================================
-
 def test_duplicate_idempotency_key_rejected(db_session):
-    """Verifies duplicate idempotency keys on payment_events are rejected deterministically."""
     audit_repo = AuditRepository(db_session)
     idempotency_key = "REQ-IDEMP-FAILMODE-001"
 
-    # 1. First payment event records cleanly
     first_event = audit_repo.record_payment_event(
         idempotency_key=idempotency_key,
         event_type="AUTHORIZED",
@@ -59,7 +50,6 @@ def test_duplicate_idempotency_key_rejected(db_session):
     assert first_event.id is not None
     assert first_event.idempotency_key == idempotency_key
 
-    # 2. Second attempt with the exact same idempotency key must raise ReplayViolationError
     with pytest.raises(ReplayViolationError) as exc_info:
         audit_repo.record_payment_event(
             idempotency_key=idempotency_key,
@@ -74,16 +64,10 @@ def test_duplicate_idempotency_key_rejected(db_session):
     assert "Duplicate payment request detected" in str(exc_info.value)
 
 
-# ============================================================================
-# Failure Mode Test 2: Mandate Expiry Enforcement
-# ============================================================================
-
 def test_consume_expired_mandate_fails(db_session):
-    """Verifies that attempting to consume an expired mandate fails deterministically."""
     neg_repo = NegotiationRepository(db_session)
     mandate_repo = MandateRepository(db_session)
 
-    # Create negotiation
     neg = neg_repo.create_negotiation(
         shopper_id="shopper_expired_test",
         request_prompt="Buy widget",
@@ -92,7 +76,6 @@ def test_consume_expired_mandate_fails(db_session):
     )
 
     digest_val = "1" * 64
-    # Create a mandate with expiration in the past
     past_time = datetime.now(timezone.utc) - timedelta(minutes=10)
     mandate = mandate_repo.save_mandate(
         negotiation_id=neg.id,
@@ -105,7 +88,6 @@ def test_consume_expired_mandate_fails(db_session):
         status="ACTIVE",
     )
 
-    # Attempt to consume expired mandate with raise_on_error=True
     with pytest.raises(MandateExpiredError) as exc_info:
         mandate_repo.consume_mandate(
             mandate_id="mnd_expired_001",
@@ -117,16 +99,10 @@ def test_consume_expired_mandate_fails(db_session):
     assert "expired" in str(exc_info.value).lower()
 
 
-# ============================================================================
-# Failure Mode Test 3: Mandate Double-Consumption Prevention
-# ============================================================================
-
 def test_consume_already_consumed_mandate_fails(db_session):
-    """Verifies that attempting to consume an already-consumed mandate fails deterministically."""
     neg_repo = NegotiationRepository(db_session)
     mandate_repo = MandateRepository(db_session)
 
-    # Create negotiation
     neg = neg_repo.create_negotiation(
         shopper_id="shopper_double_consume_test",
         request_prompt="Buy gadget",
@@ -135,7 +111,6 @@ def test_consume_already_consumed_mandate_fails(db_session):
     )
 
     digest_val = "2" * 64
-    # Create active mandate expiring in future
     future_time = datetime.now(timezone.utc) + timedelta(hours=2)
     mandate = mandate_repo.save_mandate(
         negotiation_id=neg.id,
@@ -147,7 +122,6 @@ def test_consume_already_consumed_mandate_fails(db_session):
         status="ACTIVE",
     )
 
-    # 1. First consumption succeeds
     assert (
         mandate_repo.consume_mandate(
             mandate_id="mnd_double_consume_001",
@@ -158,12 +132,10 @@ def test_consume_already_consumed_mandate_fails(db_session):
         is True
     )
 
-    # Verify mandate status is updated to CONSUMED
     refreshed_mandate = mandate_repo.get_mandate_by_id("mnd_double_consume_001")
     assert refreshed_mandate.status == "CONSUMED"
     assert refreshed_mandate.consumed_at is not None
 
-    # 2. Second consumption attempt must raise MandateAlreadyConsumedError when raise_on_error=True
     with pytest.raises(MandateAlreadyConsumedError) as exc_info:
         mandate_repo.consume_mandate(
             mandate_id="mnd_double_consume_001",
@@ -175,16 +147,10 @@ def test_consume_already_consumed_mandate_fails(db_session):
     assert "already" in str(exc_info.value).lower()
 
 
-# ============================================================================
-# Failure Mode Test 4: Monetary Minor-Unit Precision and Exact Boundaries
-# ============================================================================
-
 def test_monetary_values_minor_unit_boundaries(db_session):
-    """Verifies exact integer minor unit (cents) consistency across monetary tables."""
     neg_repo = NegotiationRepository(db_session)
     audit_repo = AuditRepository(db_session)
 
-    # 1. Negotiation budget cents
     budget_decimal = Decimal("499.99")
     neg = neg_repo.create_negotiation(
         shopper_id="shopper_cents_test",
@@ -197,7 +163,6 @@ def test_monetary_values_minor_unit_boundaries(db_session):
     assert neg.budget_amount_cents == 49999
     assert neg.budget_amount == Decimal("499.99")
 
-    # 2. Offer snapshot cents
     snapshot_price = Decimal("459.95")
     snapshot = neg_repo.create_offer_snapshot(
         negotiation_id=neg.id,
@@ -210,7 +175,6 @@ def test_monetary_values_minor_unit_boundaries(db_session):
     assert snapshot.offered_price_cents == 45995
     assert snapshot.offered_price == Decimal("459.95")
 
-    # 3. Product reference minor units
     now = datetime.now(timezone.utc)
     pref = neg_repo.add_product_reference(
         negotiation_id=neg.id,
@@ -229,7 +193,6 @@ def test_monetary_values_minor_unit_boundaries(db_session):
     assert pref.price_cents == 45995
     assert pref.price_minor == 45995
 
-    # 4. Payment event cents
     pay_event = audit_repo.record_payment_event(
         idempotency_key="REQ-CENTS-TEST-001",
         event_type="AUTHORIZED",
@@ -240,12 +203,7 @@ def test_monetary_values_minor_unit_boundaries(db_session):
     assert pay_event.amount == Decimal("459.95")
 
 
-# ============================================================================
-# Additional Test: Verification Event Append-Only Audit Logging
-# ============================================================================
-
 def test_verification_events_audit_logging(db_session):
-    """Verifies recording and retrieving deterministic gate verification events."""
     neg_repo = NegotiationRepository(db_session)
     audit_repo = AuditRepository(db_session)
 
@@ -256,7 +214,6 @@ def test_verification_events_audit_logging(db_session):
         currency="USD",
     )
 
-    # Record PASS event
     pass_event = audit_repo.record_verification_event(
         negotiation_id=neg.id,
         gate_name="PRICE_CAP_GATE",
@@ -269,7 +226,6 @@ def test_verification_events_audit_logging(db_session):
     assert pass_event.id is not None
     assert pass_event.decision == "PASSED"
 
-    # Record BLOCK event
     block_event = audit_repo.record_verification_event(
         negotiation_id=neg.id,
         gate_name="MERCHANT_GATE",
@@ -281,7 +237,6 @@ def test_verification_events_audit_logging(db_session):
     assert block_event.id is not None
     assert block_event.decision == "BLOCKED"
 
-    # Query all events for this negotiation
     events = audit_repo.get_verification_events_for_negotiation(neg.id)
     assert len(events) == 2
     assert events[0].gate_name == "PRICE_CAP_GATE"

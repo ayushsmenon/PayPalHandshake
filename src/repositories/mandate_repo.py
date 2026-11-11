@@ -1,7 +1,6 @@
-"""Repository for mandate.v2 storage and replay-safe atomic consumption."""
-
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -21,8 +20,6 @@ from src.repositories.base import (
 
 
 class MandateRepository(BaseRepository):
-    """Storage, validation, and atomic consumption of mandate.v2 agreements."""
-
     def save_mandate(
         self,
         negotiation_id: UUID,
@@ -44,10 +41,6 @@ class MandateRepository(BaseRepository):
         status: str = "ACTIVE",
         issued_at: datetime | None = None,
     ) -> Mandate:
-        """Stores a mandate conforming to the mandate.v2 protocol.
-
-        Enforces zero tolerance for synthetic fallback digests.
-        """
         if mandate_digest is not None:
             if not str(mandate_digest).strip():
                 raise ValueError("Empty mandate_digest: zero-tolerance for empty digests")
@@ -91,12 +84,10 @@ class MandateRepository(BaseRepository):
             ) from exc
 
     def get_mandate_by_id(self, mandate_id: str) -> Mandate | None:
-        """Retrieves a mandate by its protocol string ID (e.g. 'mnd_123')."""
         stmt = select(Mandate).where(Mandate.mandate_id == mandate_id)
         return self.session.scalar(stmt)
 
     def get_mandate_by_uuid(self, id: UUID) -> Mandate | None:
-        """Retrieves a mandate by its internal database UUID."""
         stmt = select(Mandate).where(Mandate.id == id)
         return self.session.scalar(stmt)
 
@@ -112,25 +103,8 @@ class MandateRepository(BaseRepository):
         details: dict[str, Any] | None = None,
         raise_on_error: bool = False,
     ) -> bool:
-        """Atomically checks and consumes an active mandate with replay prevention.
-
-        ZERO TOLERANCE: Purges synthetic fallback digests.
-        Missing or empty digests fail closed immediately.
-
-        Returns:
-            True if atomically consumed and recorded.
-            False if already consumed, expired, or race condition lost.
-
-        Raises:
-            ValueError: If expected_digest is missing, empty, or synthetic.
-            NotFoundError: If the target mandate does not exist.
-            PersistenceError: If the mandate has no authoritative digest or digest mismatches.
-            MandateExpiredError: If raise_on_error is True and mandate has expired.
-            MandateAlreadyConsumedError: If raise_on_error is True and mandate is already consumed.
-        """
         transaction_id = tx_id or consumption_tx_id or idempotency_key
 
-        # 1. Zero tolerance validation on digest and identifiers
         if not expected_digest or not str(expected_digest).strip():
             raise ValueError("Missing or empty expected_digest: synthetic fallbacks are strictly prohibited")
 
@@ -146,7 +120,6 @@ class MandateRepository(BaseRepository):
         if not transaction_id or not str(transaction_id).strip():
             raise ValueError("Missing or empty tx_id")
 
-        # 2. Pre-flight check: Target mandate must exist and have matching digest (fail closed)
         mandate = self.get_mandate_by_id(mandate_id)
         if not mandate:
             raise NotFoundError(f"Mandate '{mandate_id}' not found; cannot consume")
@@ -164,7 +137,6 @@ class MandateRepository(BaseRepository):
 
         now = datetime.now(timezone.utc)
 
-        # Timezone-aware expiry check
         expiry = mandate.expires_at
         if expiry.tzinfo is None:
             expiry = expiry.replace(tzinfo=timezone.utc)
@@ -184,8 +156,6 @@ class MandateRepository(BaseRepository):
                 raise PersistenceError(f"Cannot consume mandate '{mandate_id}' with status '{mandate.status}'")
             return False
 
-        # 3. Atomic conditional update pattern
-        # Transitions mandate state only if it is currently ACTIVE, unconsumed, not expired, and digest matches
         update_stmt = text(
             """
             UPDATE mandates
@@ -211,12 +181,10 @@ class MandateRepository(BaseRepository):
         )
 
         consumption_id = uuid4()
-        import json
         details_bind = json.dumps(details or {}, default=str)
 
         try:
             with self.session.begin_nested():
-                # Execute conditional update
                 result = self.session.execute(
                     update_stmt,
                     {
@@ -232,7 +200,6 @@ class MandateRepository(BaseRepository):
                         raise MandateAlreadyConsumedError(f"Mandate '{mandate_id}' could not be transitioned")
                     return False
 
-                # Insert durable consumption audit log
                 self.session.execute(
                     insert_consumption_stmt,
                     {
@@ -247,7 +214,6 @@ class MandateRepository(BaseRepository):
                     },
                 )
 
-                # Synchronize in-memory ORM state in current session
                 mandate.status = "CONSUMED"
                 mandate.consumed_at = now
                 mandate.consumption_tx_id = transaction_id

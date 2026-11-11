@@ -1,5 +1,3 @@
-"""Append-only audit repository for gate verification and PayPal payment events."""
-
 from __future__ import annotations
 
 from decimal import Decimal
@@ -14,8 +12,6 @@ from src.repositories.base import BaseRepository, ReplayViolationError
 
 
 class AuditRepository(BaseRepository):
-    """Append-only logging for deterministic security gate verification and PayPal payments."""
-
     def record_verification_event(
         self,
         gate_name: str,
@@ -26,7 +22,6 @@ class AuditRepository(BaseRepository):
         reason_details: str | None = None,
         manifest_digest: str | None = None,
     ) -> VerificationEvent:
-        """Appends an immutable gate verification record."""
         event = VerificationEvent(
             negotiation_id=negotiation_id,
             gate_name=gate_name,
@@ -56,11 +51,6 @@ class AuditRepository(BaseRepository):
         status: str = "CREATED",
         raw_response_summary: dict[str, Any] | None = None,
     ) -> PaymentEvent:
-        """Appends an immutable payment transaction event using integer minor units.
-
-        Enforces replay protection via idempotency_key uniqueness.
-        Raises ReplayViolationError if idempotency_key already exists.
-        """
         curr = (currency_code or currency).upper()
         decimal_amount = amount if amount is not None else Decimal(amount_cents) / Decimal(100)
 
@@ -91,14 +81,12 @@ class AuditRepository(BaseRepository):
             ) from exc
 
     def get_payment_event_by_idempotency_key(self, idempotency_key: str) -> PaymentEvent | None:
-        """Retrieves a payment event by its unique idempotency key."""
         stmt = select(PaymentEvent).where(PaymentEvent.idempotency_key == idempotency_key)
         return self.session.scalar(stmt)
 
     def get_verification_events_for_negotiation(
         self, negotiation_id: UUID
     ) -> list[VerificationEvent]:
-        """Returns all verification event records associated with a negotiation."""
         stmt = (
             select(VerificationEvent)
             .where(VerificationEvent.negotiation_id == negotiation_id)

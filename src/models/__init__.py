@@ -1,5 +1,3 @@
-"""Data models package for PostgreSQL persistence in PayPal Agent Platform."""
-
 from .models import (
     Base,
     Negotiation,

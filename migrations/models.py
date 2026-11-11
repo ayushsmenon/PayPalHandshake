@@ -1,5 +1,3 @@
-"""Re-export database models from src.models for migration references."""
-
 from src.models import (
     Base,
     Negotiation,

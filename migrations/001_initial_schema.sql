@@ -1,23 +1,5 @@
--- ============================================================================
--- Migration: 001_initial_schema.sql
--- Description: Initial PostgreSQL Database Schema for PayPal Handshake
--- Platform: Autonomous Agent Commerce / Security Verification & Bounded Payments
--- Target Database: PostgreSQL 16
---
--- STRICT SECURITY INVARIANTS ENFORCED:
--- 1. ZERO SECRET EXPOSURE: No PayPal credentials, client secrets, or private
---    Ed25519 signing keys are stored. Only public keys, signatures, and hashes.
--- 2. REPLAY PROTECTION: Stable idempotency_key with unique index for payment events.
--- 3. AUDIT IMMUTABILITY: Verifiable digests, offer snapshots, and gate records.
--- 4. LIVE FLOW ISOLATION: Standalone schema definitions without coupling.
--- ============================================================================
-
--- Ensure pgcrypto extension is available for gen_random_uuid()
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- ============================================================================
--- Helper Function: Auto-update updated_at timestamp
--- ============================================================================
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -26,10 +8,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ============================================================================
--- 1. Table: negotiations
--- Purpose: Stores shopper intent, budget constraints, currency, and lifecycle status.
--- ============================================================================
 CREATE TABLE IF NOT EXISTS negotiations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     shopper_id VARCHAR(128) NOT NULL,
@@ -55,22 +33,16 @@ COMMENT ON COLUMN negotiations.metadata IS 'Flexible unstructured context, shopp
 COMMENT ON COLUMN negotiations.created_at IS 'Timestamp of negotiation creation';
 COMMENT ON COLUMN negotiations.updated_at IS 'Timestamp of last update (auto-updated by trigger)';
 
--- Indexes for negotiations
 CREATE INDEX IF NOT EXISTS idx_negotiations_shopper_id ON negotiations (shopper_id);
 CREATE INDEX IF NOT EXISTS idx_negotiations_status ON negotiations (status);
 CREATE INDEX IF NOT EXISTS idx_negotiations_created_at ON negotiations (created_at DESC);
 
--- Trigger for auto-updating updated_at on negotiations
 DROP TRIGGER IF EXISTS trg_negotiations_updated_at ON negotiations;
 CREATE TRIGGER trg_negotiations_updated_at
     BEFORE UPDATE ON negotiations
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
--- ============================================================================
--- 2. Table: products
--- Purpose: Tracks items discovered or evaluated during the negotiation.
--- ============================================================================
 CREATE TABLE IF NOT EXISTS products (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     negotiation_id UUID NOT NULL REFERENCES negotiations(id) ON DELETE CASCADE,
@@ -90,16 +62,10 @@ COMMENT ON COLUMN products.description IS 'Optional product description or detai
 COMMENT ON COLUMN products.catalog_metadata IS 'Raw extracted attributes, specifications, verification flags, and brand metadata';
 COMMENT ON COLUMN products.created_at IS 'Timestamp when product was recorded';
 
--- Indexes for products
 CREATE INDEX IF NOT EXISTS idx_products_negotiation_id ON products (negotiation_id);
 CREATE INDEX IF NOT EXISTS idx_products_external_id ON products (external_product_id);
 CREATE INDEX IF NOT EXISTS idx_products_created_at ON products (created_at DESC);
 
--- ============================================================================
--- 3. Table: offer_snapshots
--- Purpose: Immutable record of merchant, price, currency, and terms frozen
---          at selection/agreement time.
--- ============================================================================
 CREATE TABLE IF NOT EXISTS offer_snapshots (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     negotiation_id UUID NOT NULL REFERENCES negotiations(id) ON DELETE CASCADE,
@@ -127,19 +93,12 @@ COMMENT ON COLUMN offer_snapshots.terms_payload IS 'Snapshot of shipping, itemiz
 COMMENT ON COLUMN offer_snapshots.offer_hash IS 'SHA-256 digest of offer details for cryptographic immutability checks';
 COMMENT ON COLUMN offer_snapshots.snapshot_at IS 'Point-in-time timestamp when offer was evaluated and frozen';
 
--- Indexes for offer_snapshots
 CREATE INDEX IF NOT EXISTS idx_offer_snapshots_negotiation_id ON offer_snapshots (negotiation_id);
 CREATE INDEX IF NOT EXISTS idx_offer_snapshots_product_id ON offer_snapshots (product_id);
 CREATE INDEX IF NOT EXISTS idx_offer_snapshots_merchant_id ON offer_snapshots (merchant_id);
 CREATE INDEX IF NOT EXISTS idx_offer_snapshots_offer_hash ON offer_snapshots (offer_hash);
 CREATE INDEX IF NOT EXISTS idx_offer_snapshots_snapshot_at ON offer_snapshots (snapshot_at DESC);
 
--- ============================================================================
--- 4. Table: mandates
--- Purpose: Signed shopper spending authorizations and bounded agreements.
--- SECURITY RULE: Stored keys are strictly public keys and cryptographic signatures.
---                NEVER STORE PRIVATE KEYS.
--- ============================================================================
 CREATE TABLE IF NOT EXISTS mandates (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     negotiation_id UUID NOT NULL REFERENCES negotiations(id) ON DELETE CASCADE,
@@ -162,17 +121,11 @@ COMMENT ON COLUMN mandates.expires_at IS 'Expiration timestamp after which the m
 COMMENT ON COLUMN mandates.status IS 'Mandate lifecycle state (e.g. ACTIVE, CONSUMED, REVOKED, EXPIRED)';
 COMMENT ON COLUMN mandates.created_at IS 'Issuance timestamp of the signed mandate';
 
--- Indexes for mandates
 CREATE INDEX IF NOT EXISTS idx_mandates_negotiation_id ON mandates (negotiation_id);
 CREATE INDEX IF NOT EXISTS idx_mandates_public_key ON mandates (public_key);
 CREATE INDEX IF NOT EXISTS idx_mandates_status ON mandates (status);
 CREATE INDEX IF NOT EXISTS idx_mandates_expires_at ON mandates (expires_at);
 
--- ============================================================================
--- 5. Table: verification_events
--- Purpose: Immutable audit log of all deterministic gate evaluations (AST gates,
---          hidden test suites, budget checks, schema checks).
--- ============================================================================
 CREATE TABLE IF NOT EXISTS verification_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     negotiation_id UUID REFERENCES negotiations(id) ON DELETE CASCADE,
@@ -197,20 +150,12 @@ COMMENT ON COLUMN verification_events.reason_details IS 'Detailed human/machine-
 COMMENT ON COLUMN verification_events.manifest_digest IS 'SHA-256 digest of checked manifest or payload for cryptographic provenance';
 COMMENT ON COLUMN verification_events.created_at IS 'Timestamp of evaluation';
 
--- Indexes for verification_events
 CREATE INDEX IF NOT EXISTS idx_verification_events_negotiation_id ON verification_events (negotiation_id);
 CREATE INDEX IF NOT EXISTS idx_verification_events_gate_name ON verification_events (gate_name);
 CREATE INDEX IF NOT EXISTS idx_verification_events_decision ON verification_events (decision);
 CREATE INDEX IF NOT EXISTS idx_verification_events_manifest_digest ON verification_events (manifest_digest);
 CREATE INDEX IF NOT EXISTS idx_verification_events_created_at ON verification_events (created_at DESC);
 
--- ============================================================================
--- 6. Table: payment_events
--- Purpose: Immutable transaction log for PayPal Orders v2, Authorizations,
---          Captures, and Payouts with Replay Protection.
--- SECURITY RULE: Stored data contains strictly external transaction identifiers.
---                NO PASSWORDS, CLIENT SECRETS, OR BEARER TOKENS PERMITTED.
--- ============================================================================
 CREATE TABLE IF NOT EXISTS payment_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     negotiation_id UUID REFERENCES negotiations(id) ON DELETE CASCADE,
@@ -245,7 +190,6 @@ COMMENT ON COLUMN payment_events.status IS 'Transaction status (e.g. CREATED, CA
 COMMENT ON COLUMN payment_events.raw_response_summary IS 'Sanitized PayPal API response summary (NO credentials or auth headers)';
 COMMENT ON COLUMN payment_events.created_at IS 'Timestamp of the payment event';
 
--- Indexes for payment_events
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_events_idempotency_key ON payment_events (idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_payment_events_negotiation_id ON payment_events (negotiation_id);
 CREATE INDEX IF NOT EXISTS idx_payment_events_paypal_order_id ON payment_events (paypal_order_id);

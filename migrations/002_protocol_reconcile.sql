@@ -1,33 +1,12 @@
--- ============================================================================
--- Migration: 002_protocol_reconcile.sql
--- Description: Additive Protocol Reconciliation for PayPal Agent Platform
--- Milestone: mandate.v2, product-reference.v1, integer minor units & replay prevention
---
--- STRICT INVARIANTS ENFORCED:
--- 1. Non-destructive additive migration: preserves existing data & schema.
--- 2. Minor units: Integer cents (BIGINT) added across all monetary fields.
--- 3. mandate.v2: Explicit schema_version, cap_cents, category/merchant constraints, nonce, digest.
--- 4. product-reference.v1: Canonical product reference storage with SHA-256 digests.
--- 5. Replay prevention: Durable mandate consumption tracking with unique constraints.
--- 6. Zero secrets: NO private keys, passwords, client secrets, or auth tokens.
--- ============================================================================
-
--- ----------------------------------------------------------------------------
--- 1. Integer Minor Units (Monetary precision in cents / minor currency units)
--- ----------------------------------------------------------------------------
-
--- negotiations: add budget_cents & budget_amount_cents
 ALTER TABLE negotiations
     ADD COLUMN IF NOT EXISTS budget_cents BIGINT DEFAULT 0,
     ADD COLUMN IF NOT EXISTS budget_amount_cents BIGINT DEFAULT 0;
 
--- Backfill integer cents from existing decimal budget_amount if present
 UPDATE negotiations
 SET budget_cents = ROUND(budget_amount * 100)::BIGINT,
     budget_amount_cents = ROUND(budget_amount * 100)::BIGINT
 WHERE budget_cents = 0 AND budget_amount IS NOT NULL;
 
--- Add check constraint for non-negative minor units
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -38,7 +17,6 @@ BEGIN
     END IF;
 END $$;
 
--- offer_snapshots: add price_cents & offered_price_cents
 ALTER TABLE offer_snapshots
     ADD COLUMN IF NOT EXISTS price_cents BIGINT DEFAULT 0,
     ADD COLUMN IF NOT EXISTS offered_price_cents BIGINT DEFAULT 0;
@@ -58,7 +36,6 @@ BEGIN
     END IF;
 END $$;
 
--- payment_events: add amount_cents
 ALTER TABLE payment_events
     ADD COLUMN IF NOT EXISTS amount_cents BIGINT DEFAULT 0;
 
@@ -76,10 +53,6 @@ BEGIN
     END IF;
 END $$;
 
--- ----------------------------------------------------------------------------
--- 2. mandate.v2 Protocol Alignment & Replay Prevention
--- ----------------------------------------------------------------------------
-
 ALTER TABLE mandates
     ADD COLUMN IF NOT EXISTS mandate_id VARCHAR(128),
     ADD COLUMN IF NOT EXISTS schema_version VARCHAR(32) DEFAULT 'mandate.v2',
@@ -94,27 +67,17 @@ ALTER TABLE mandates
     ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS consumption_tx_id VARCHAR(128);
 
--- Backfill mandate_id from id if empty
 UPDATE mandates
 SET mandate_id = 'mnd_' || id::text
 WHERE mandate_id IS NULL;
 
--- Backfill issued_at from created_at if empty
 UPDATE mandates
 SET issued_at = created_at
 WHERE issued_at IS NULL;
 
--- Unique index on mandate_id for fast lookup
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mandates_mandate_id ON mandates (mandate_id);
--- Unique index on mandate_digest to prevent duplicate/replayed mandate registration
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mandates_mandate_digest ON mandates (mandate_digest) WHERE mandate_digest IS NOT NULL;
--- Index on consumption timestamp to track active vs consumed
 CREATE INDEX IF NOT EXISTS idx_mandates_consumed_at ON mandates (consumed_at);
-
--- ----------------------------------------------------------------------------
--- 3. product-reference.v1 Table
--- Purpose: Canonical, signed product references (Channel3 verification & price lock)
--- ----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS product_references (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -151,10 +114,6 @@ CREATE INDEX IF NOT EXISTS idx_product_references_negotiation_id ON product_refe
 CREATE INDEX IF NOT EXISTS idx_product_references_channel3_id ON product_references (channel3_product_id);
 CREATE INDEX IF NOT EXISTS idx_product_references_digest ON product_references (canonical_digest);
 CREATE INDEX IF NOT EXISTS idx_product_references_expires_at ON product_references (expires_at);
-
--- ----------------------------------------------------------------------------
--- 4. Durable Mandate Consumption Tracking (Strict Replay Prevention)
--- ----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS mandate_consumptions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

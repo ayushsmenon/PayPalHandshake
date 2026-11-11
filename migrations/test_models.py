@@ -1,12 +1,3 @@
-"""Standalone verification test for the database schema models.
-
-Verifies that all 6 models:
-- Instantiate valid instances
-- Enforce schema validations
-- Contain NO secrets or private keys
-- Do not affect or connect to any live flows
-"""
-
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -29,7 +20,6 @@ from src.models import (
 
 
 def test_models_compilation_and_validation():
-    # 1. Negotiation
     neg_id = uuid4()
     neg_schema = NegotiationSchema(
         id=neg_id,
@@ -42,7 +32,6 @@ def test_models_compilation_and_validation():
     )
     assert neg_schema.shopper_id == "shopper_usr_12345"
 
-    # 2. Product
     prod_id = uuid4()
     prod_schema = ProductSchema(
         id=prod_id,
@@ -54,7 +43,6 @@ def test_models_compilation_and_validation():
     )
     assert prod_schema.external_product_id == "ch3_prod_987654"
 
-    # 3. Offer Snapshot
     offer_id = uuid4()
     offer_schema = OfferSnapshotSchema(
         id=offer_id,
@@ -69,11 +57,11 @@ def test_models_compilation_and_validation():
     )
     assert offer_schema.offered_price == Decimal("459.99")
 
-    # 4. Mandate (Zero private keys, only public key & signature)
     now = datetime.now(timezone.utc)
     mandate_id = uuid4()
     mandate_schema = MandateSchema(
         id=mandate_id,
+        mandate_id="mnd_schema_test_01",
         negotiation_id=neg_id,
         public_key="a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         signature="base64_or_hex_ed25519_signature_payload",
@@ -83,7 +71,6 @@ def test_models_compilation_and_validation():
     )
     assert mandate_schema.public_key.startswith("a1b2c3d4")
 
-    # 5. Verification Event
     verif_id = uuid4()
     verif_schema = VerificationEventSchema(
         id=verif_id,
@@ -97,7 +84,6 @@ def test_models_compilation_and_validation():
     )
     assert verif_schema.decision == "PASSED"
 
-    # 6. Payment Event (Zero credentials, idempotency key for replay protection)
     pay_id = uuid4()
     pay_schema = PaymentEventSchema(
         id=pay_id,
@@ -113,7 +99,6 @@ def test_models_compilation_and_validation():
     )
     assert pay_schema.idempotency_key == "REQ-IDEMP-001"
 
-    # Verify SQLAlchemy metadata contains all 6 tables
     table_names = set(Base.metadata.tables.keys())
     expected_tables = {
         "negotiations",

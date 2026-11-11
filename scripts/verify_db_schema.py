@@ -1,17 +1,3 @@
-"""Standalone Verification Script for PostgreSQL Database Schema Setup & Protocol Reconciliation.
-
-Tests and verifies:
-1. SQL migration files (001_initial_schema.sql, 002_protocol_reconcile.sql) syntax, constraints, and zero-secret rules.
-2. SQLAlchemy ORM models compilation against PostgreSQL 16 dialect.
-3. Pydantic v2 serialization/deserialization for all entities.
-4. Minor-unit integer consistency, mandate.v2, product-reference.v1, and replay prevention.
-5. (Optional) Live PostgreSQL container verification if DATABASE_URL is set or passed via --db-url.
-
-Usage:
-    py scripts/verify_db_schema.py
-    py scripts/verify_db_schema.py --db-url postgresql://user:pass@localhost:5432/dbname
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -24,7 +10,6 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
-# Ensure project root is in PYTHONPATH
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -77,7 +62,6 @@ FORBIDDEN_KEYWORDS = [
 
 
 def test_sql_migration_files() -> None:
-    """Verifies that both SQL migration files satisfy structural and security invariants."""
     print("[1/5] Verifying SQL migration scripts (001 & 002)...")
     migration_files = [
         REPO_ROOT / "migrations" / "001_initial_schema.sql",
@@ -90,7 +74,6 @@ def test_sql_migration_files() -> None:
         assert migration_path.exists(), f"Missing migration file at {migration_path}"
         sql_content = migration_path.read_text(encoding="utf-8")
 
-        # Strip SQL comments
         for line in sql_content.splitlines():
             clean_line = re.sub(r"--.*$", "", line).strip()
             if clean_line:
@@ -98,22 +81,18 @@ def test_sql_migration_files() -> None:
 
     sql_code_only = "\n".join(combined_code)
 
-    # Check for forbidden secret column definitions
     for forbidden in FORBIDDEN_KEYWORDS:
         assert forbidden not in sql_code_only, (
             f"CRITICAL SECURITY VIOLATION: '{forbidden}' found in migration SQL statements!"
         )
 
-    # Check for all expected tables across migrations
     for table in EXPECTED_TABLES:
         pattern = rf"create\s+table\s+(?:if\s+not\s+exists\s+)?{table}\b"
         assert re.search(pattern, sql_code_only), f"Table {table} not found in migration SQL"
 
-    # Check for replay protection idempotency key unique constraint/index
     assert "idempotency_key" in sql_code_only, "Missing idempotency_key for replay protection"
     assert "mandate_digest" in sql_code_only, "Missing mandate_digest for replay protection"
 
-    # Check for integer minor units (cents)
     assert "budget_cents" in sql_code_only or "budget_amount_cents" in sql_code_only
     assert "price_minor" in sql_code_only
     assert "amount_cents" in sql_code_only
@@ -122,7 +101,6 @@ def test_sql_migration_files() -> None:
 
 
 def test_sqlalchemy_models_ddl_compilation() -> None:
-    """Verifies that SQLAlchemy ORM models compile cleanly under PostgreSQL 16 dialect."""
     print("[2/5] Compiling SQLAlchemy models to PostgreSQL 16 DDL...")
     dialect = postgresql.dialect()
 
@@ -136,14 +114,12 @@ def test_sqlalchemy_models_ddl_compilation() -> None:
 
 
 def test_pydantic_schemas_and_validation() -> None:
-    """Verifies Pydantic v2 models instantiation and schema validation."""
     print("[3/5] Validating Pydantic entity schemas and invariants...")
 
     now = datetime.now(timezone.utc)
     neg_id = uuid4()
     prod_id = uuid4()
 
-    # 1. Negotiation
     neg = NegotiationSchema(
         id=neg_id,
         shopper_id="shopper_usr_12345",
@@ -157,7 +133,6 @@ def test_pydantic_schemas_and_validation() -> None:
     )
     assert neg.budget_cents == 50000
 
-    # 2. Product
     prod = ProductSchema(
         id=prod_id,
         negotiation_id=neg_id,
@@ -168,7 +143,6 @@ def test_pydantic_schemas_and_validation() -> None:
     )
     assert prod.external_product_id == "ch3_item_776655"
 
-    # 3. Offer Snapshot
     offer_payload = {"price": 459.99, "merchant": "Dell Official"}
     offer_hash = hashlib.sha256(str(sorted(offer_payload.items())).encode()).hexdigest()
     snapshot = OfferSnapshotSchema(
@@ -185,7 +159,6 @@ def test_pydantic_schemas_and_validation() -> None:
     )
     assert snapshot.price_cents == 45999
 
-    # 4. Mandate (mandate.v2, zero private keys)
     mandate = MandateSchema(
         negotiation_id=neg_id,
         mandate_id="mnd_reconciled_001",
@@ -202,7 +175,6 @@ def test_pydantic_schemas_and_validation() -> None:
     )
     assert mandate.schema_version == "mandate.v2"
 
-    # 5. Product Reference (product-reference.v1)
     pref = ProductReferenceSchema(
         negotiation_id=neg_id,
         product_id=prod_id,
@@ -226,7 +198,6 @@ def test_pydantic_schemas_and_validation() -> None:
     )
     assert pref.price_minor == 45999
 
-    # 6. Payment Event (Replay protection via idempotency key)
     pay_event = PaymentEventSchema(
         negotiation_id=neg_id,
         idempotency_key="REQ-IDEMP-20261111-HS2048-001",
@@ -244,7 +215,6 @@ def test_pydantic_schemas_and_validation() -> None:
 
 
 def test_zero_secret_audit() -> None:
-    """Verifies that neither ORM model columns nor schema fields contain secret identifiers."""
     print("[4/5] Executing Zero-Secret Audit across all models...")
     for table_name, table in Base.metadata.tables.items():
         for column in table.columns:
@@ -257,7 +227,6 @@ def test_zero_secret_audit() -> None:
 
 
 def test_live_postgres_connection(db_url: str) -> None:
-    """Tests executing both migrations against a live PostgreSQL container/database if provided."""
     print(f"[5/5] Connecting to live PostgreSQL database at {db_url}...")
     engine = create_engine(db_url)
     migration_files = [
@@ -272,7 +241,6 @@ def test_live_postgres_connection(db_url: str) -> None:
                 sql_script = m_path.read_text(encoding="utf-8")
                 conn.execute(text(sql_script))
 
-        # Verify tables exist in information_schema
         result = conn.execute(
             text(
                 "SELECT table_name FROM information_schema.tables "
@@ -284,7 +252,6 @@ def test_live_postgres_connection(db_url: str) -> None:
         missing = set(EXPECTED_TABLES) - found_tables
         assert not missing, f"Missing tables in live PostgreSQL: {missing}"
 
-        # Verify idempotency key unique constraint
         result = conn.execute(
             text(
                 "SELECT indexname FROM pg_indexes "
@@ -301,7 +268,7 @@ def main() -> int:
     parser.add_argument(
         "--db-url",
         default=os.getenv("DATABASE_URL"),
-        help="Optional PostgreSQL connection URL (e.g., postgresql://postgres:postgres@localhost:5432/testdb)",
+        help="Optional PostgreSQL connection URL (e.g., postgresql://user:pass@localhost:5432/testdb)",
     )
     args = parser.parse_args()
 
