@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Literal
 
-from fastapi import FastAPI
-from pydantic import BaseModel, ConfigDict
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 from .paypal_adapter import PayPalVerificationAdapter
 from .process_b_client import ProcessBClient, ProcessBVerificationError
@@ -16,6 +17,36 @@ from .versioned_models import (
     MandateV2,
     PostAuthorizationBindingV1,
 )
+from .product_reference import (
+    ProductReferenceIssuanceError,
+    SignedProductReference,
+    issue_product_reference,
+)
+
+
+class ProductCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    product_identifier: str = Field(min_length=1)
+    merchant_domain: str = Field(min_length=1)
+    price_cents: int = Field(ge=0)
+    currency: str = Field(min_length=3, max_length=3)
+    offer_url: str | None = None
+    availability: str | None = None
+    is_real: bool | None = None
+    verified: bool | None = None
+
+
+class ProductReferenceIssuanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    products: list[ProductCandidate] = Field(min_length=1)
+
+
+class ProductReferenceIssuanceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    references: list[SignedProductReference]
 
 
 class DryRunRequest(BaseModel):
@@ -132,7 +163,35 @@ def create_app(
             reason="Process B, PayPal observations, and mandate consent passed.",
         )
 
+    @app.post(
+        "/internal/v1/product-references/issue",
+        response_model=ProductReferenceIssuanceResponse,
+    )
+    def issue_product_references(
+        request: ProductReferenceIssuanceRequest,
+    ) -> ProductReferenceIssuanceResponse:
+        references: list[SignedProductReference] = []
+        for candidate in request.products:
+            try:
+                reference = issue_product_reference(
+                    candidate.product_identifier,
+                    candidate.merchant_domain,
+                    _price_cents_as_amount(candidate.price_cents),
+                    candidate.currency,
+                )
+            except ProductReferenceIssuanceError as error:
+                raise HTTPException(
+                    status_code=422,
+                    detail="A product candidate could not be independently verified.",
+                ) from error
+            references.append(reference)
+        return ProductReferenceIssuanceResponse(references=references)
+
     return app
+
+
+def _price_cents_as_amount(price_cents: int) -> str:
+    return format(Decimal(price_cents) / Decimal(100), ".2f")
 
 
 app = create_app()

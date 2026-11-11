@@ -77,6 +77,16 @@ create orders, authorize, capture, or consume one-time approval records.
 Durable consent uniqueness and replay prevention remain deferred to a
 persistent `ConsentStore`.
 
+Process C exposes
+`POST /internal/v1/product-references/issue` for Process A's structured deal
+items. Each item supplies a Channel3 product ID, merchant domain, currency,
+and integer-cent expected unit price. Process C ignores caller-supplied
+`offer_url`, `availability`, `is_real`, and `verified` claims, re-fetches the
+product itself, and returns signed `product-reference.v1` objects only when
+one exact in-stock offer matches. Missing, unavailable, mismatched, or
+ambiguous offers are rejected. Process B remains responsible for independent
+verification of those references.
+
 ## Trusted Channel3 product references
 
 Process C can issue a short-lived reference only after it independently

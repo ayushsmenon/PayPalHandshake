@@ -1,13 +1,18 @@
 from fastapi import APIRouter
+from fastapi import HTTPException
 
 from .schemas import (
     DemoNegotiation,
+    DealAssemblyRequest,
+    DealAssemblyResponse,
+    DealItem,
     NegotiationEvent,
     NegotiationStatus,
     Product,
     VerificationCheck,
     VerificationState,
 )
+from .channel3 import Channel3UnavailableError, assemble_deal, channel3_client_from_environment
 
 router = APIRouter(prefix="/api/v1", tags=["negotiations"])
 
@@ -72,4 +77,47 @@ def get_demo_negotiation() -> DemoNegotiation:
                 state=VerificationState.PENDING,
             ),
         ],
+    )
+
+
+@router.post("/deals/assemble", response_model=DealAssemblyResponse)
+def assemble_shopping_deal(request: DealAssemblyRequest) -> DealAssemblyResponse:
+    try:
+        client = channel3_client_from_environment()
+        selected, limitations = assemble_deal(
+            client,
+            request.requirements,
+            request.budget_cents,
+            request.currency,
+        )
+    except (ValueError, Channel3UnavailableError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Channel3 product discovery is currently unavailable.",
+        ) from error
+
+    total_cents = sum(item.price_cents for item in selected)
+    return DealAssemblyResponse(
+        status="ASSEMBLED" if selected else "NO_ELIGIBLE_DEAL",
+        is_real=bool(selected),
+        source="channel3",
+        negotiation_id=request.negotiation_id,
+        budget_cents=request.budget_cents,
+        currency=request.currency,
+        total_cents=total_cents,
+        remaining_budget_cents=request.budget_cents - total_cents,
+        items=[
+            DealItem(
+                requirement=requirement,
+                product_identifier=item.product_id,
+                name=item.name,
+                merchant_domain=item.merchant_domain,
+                offer_url=item.offer_url,
+                price_cents=item.price_cents,
+                currency=item.currency,
+                availability=item.availability,
+            )
+            for requirement, item in zip(request.requirements, selected, strict=False)
+        ],
+        limitations=limitations,
     )

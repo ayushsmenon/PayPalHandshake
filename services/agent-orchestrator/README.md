@@ -74,6 +74,33 @@ milestone.
 The API allows CORS only from `http://localhost:3000`, the local Next.js
 frontend origin.
 
+### `POST /api/v1/deals/assemble`
+
+Accepts a server-side shopping request:
+
+```json
+{
+  "negotiation_id": "negotiation-1",
+  "requirements": ["27-inch 4K monitor", "mechanical keyboard"],
+  "budget_cents": 45000,
+  "currency": "USD"
+}
+```
+
+Process A searches Channel3 for each requirement, retrieves each returned
+product detail, and selects only explicit `InStock` offers with an HTTP(S)
+offer URL, merchant domain, price, and matching currency. The response
+contains the actual Channel3 product IDs, names, offers, integer minor-unit
+prices, and calculated total. `status` is `ASSEMBLED` only when a complete
+combination fits the budget; otherwise it is `NO_ELIGIBLE_DEAL` and
+`limitations` explains what was unavailable or why the budget could not be
+met.
+
+This is discovery data only. It is not a trusted product reference, does not
+prove verification or shopper authorization, and does not sign anything.
+Process C remains responsible for issuing product references and Process B
+remains responsible for independent verification.
+
 ## Channel3 product-search smoke test
 
 The local-only Channel3 smoke test uses the documented API interface:
