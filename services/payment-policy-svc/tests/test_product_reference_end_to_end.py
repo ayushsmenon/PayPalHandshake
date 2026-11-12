@@ -155,6 +155,225 @@ def process_b_server() -> tuple[str, Ed25519PrivateKey]:
             process.wait(timeout=5)
 
 
+@pytest.fixture
+def process_c_server(
+    process_b_server: tuple[str, Ed25519PrivateKey],
+) -> str:
+    signing_key = process_b_server[1]
+    with socket.socket() as server_socket:
+        server_socket.bind(("127.0.0.1", 0))
+        port = server_socket.getsockname()[1]
+    environment = os.environ.copy()
+    environment["CHANNEL3_API_KEY"] = "test-channel3-key"
+    environment["MANDATE_SIGNING_PRIVATE_KEY_B64"] = base64.b64encode(
+        signing_key.private_bytes_raw()
+    ).decode("ascii")
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "tests.v2_http_app:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "error",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(50):
+            if process.poll() is not None:
+                raise RuntimeError("Process C exited before becoming ready.")
+            try:
+                if httpx.get(f"{base_url}/openapi.json", timeout=0.2).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("Process C did not become ready.")
+        yield base_url
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+
+def _single_product_verification_payload(
+    reference: dict[str, object],
+    signing_key: Ed25519PrivateKey,
+) -> dict[str, object]:
+    mandate = MandateV2(
+        schema_version="mandate.v2",
+        mandate_id="mandate-http-v2",
+        negotiation_id="negotiation-http-v2",
+        paypal_order_id="ORDER-HTTP-V2",
+        authorized_cap_cents=40000,
+        currency="USD",
+        allowed_product_categories=["electronics"],
+        merchant_restrictions=["merchant.example"],
+        issued_at=NOW - timedelta(minutes=1),
+        expires_at=NOW + timedelta(hours=1),
+    )
+    binding = PostAuthorizationBindingV1(
+        schema_version="post-authorization-binding.v1",
+        binding_id="binding-http-v2",
+        mandate_id=mandate.mandate_id,
+        mandate_digest_b64=mandate_v2_digest_b64(mandate),
+        paypal_order_id=mandate.paypal_order_id,
+        paypal_auth_id="AUTH-HTTP-V2",
+        authorization_status="AUTHORIZED",
+        authorized_amount_cents=mandate.authorized_cap_cents,
+        currency=mandate.currency,
+        issued_at=NOW - timedelta(minutes=1),
+        expires_at=NOW + timedelta(hours=1),
+    )
+    candidate = CandidateDealV2(
+        negotiation_id=mandate.negotiation_id,
+        paypal_order_id=mandate.paypal_order_id,
+        merchant_id="merchant.example",
+        total_cents=32900,
+        currency="USD",
+        products=[
+            ProductLineV2(
+                product_identifier="p-1",
+                quantity=1,
+                description="Reviewed monitor",
+                unit_price_cents=32900,
+                offer_url=reference["reference"]["offer_url"],
+                product_reference=reference,
+            )
+        ],
+    )
+    return {
+        "mandate": mandate.model_dump(mode="json"),
+        "mandate_signature": base64.b64encode(
+            signing_key.sign(canonical_mandate_v2_bytes(mandate))
+        ).decode("ascii"),
+        "post_authorization_binding": binding.model_dump(mode="json"),
+        "binding_signature": base64.b64encode(
+            signing_key.sign(canonical_post_authorization_binding_v1_bytes(binding))
+        ).decode("ascii"),
+        "candidate": candidate.model_dump(mode="json"),
+    }
+
+
+def test_real_process_c_to_process_b_v2_http_integration(
+    process_b_server: tuple[str, Ed25519PrivateKey],
+    process_c_server: str,
+) -> None:
+    process_b_url, signing_key = process_b_server
+    issuance = httpx.post(
+        f"{process_c_server}/internal/v2/product-references/issue",
+        json={
+            "products": [
+                {
+                    "product_identifier": "p-1",
+                    "merchant_domain": "merchant.example",
+                    "price_cents": 32900,
+                    "currency": "USD",
+                }
+            ]
+        },
+        timeout=5,
+    )
+    assert issuance.status_code == 200
+    reference = issuance.json()["references"][0]
+    assert reference["reference"]["canonical_category"] == "electronics"
+
+    payload = _single_product_verification_payload(reference, signing_key)
+    verified = httpx.post(
+        f"{process_b_url}/api/v2/verify-authorization-binding",
+        json=payload,
+        timeout=5,
+    )
+    assert verified.status_code == 200
+    assert verified.json()["verdict"] == "PASS"
+
+    tampered_category = payload.copy()
+    tampered_category["candidate"] = payload["candidate"].copy()
+    tampered_category["candidate"]["products"] = [
+        *payload["candidate"]["products"]
+    ]
+    tampered_category["candidate"]["products"][0] = (
+        payload["candidate"]["products"][0].copy()
+    )
+    tampered_category["candidate"]["products"][0]["product_reference"] = {
+        **reference,
+        "reference": {**reference["reference"], "canonical_category": "toys"},
+    }
+    response = httpx.post(
+        f"{process_b_url}/api/v2/verify-authorization-binding",
+        json=tampered_category,
+        timeout=5,
+    )
+    assert response.status_code == 200
+    assert response.json()["verdict"] == "REJECT"
+
+    invalid_signature = payload.copy()
+    invalid_signature["candidate"] = payload["candidate"].copy()
+    invalid_signature["candidate"]["products"] = [
+        *payload["candidate"]["products"]
+    ]
+    invalid_signature["candidate"]["products"][0] = (
+        payload["candidate"]["products"][0].copy()
+    )
+    invalid_signature["candidate"]["products"][0]["product_reference"] = {
+        **reference,
+        "signature_b64": "not-a-signature",
+    }
+    response = httpx.post(
+        f"{process_b_url}/api/v2/verify-authorization-binding",
+        json=invalid_signature,
+        timeout=5,
+    )
+    assert response.status_code == 200
+    assert response.json()["verdict"] == "REJECT"
+
+    expired = ProductReferenceV2.model_validate(reference["reference"]).model_copy(
+        update={
+            "issued_at": NOW - timedelta(hours=2),
+            "expires_at": NOW - timedelta(minutes=1),
+        }
+    )
+    expired_reference = sign_product_reference_v2(expired, signing_key).model_dump(
+        mode="json"
+    )
+    expired_payload = _single_product_verification_payload(
+        expired_reference, signing_key
+    )
+    response = httpx.post(
+        f"{process_b_url}/api/v2/verify-authorization-binding",
+        json=expired_payload,
+        timeout=5,
+    )
+    assert response.status_code == 200
+    assert response.json()["verdict"] == "REJECT"
+
+    untrusted_category = httpx.post(
+        f"{process_c_server}/internal/v2/product-references/issue",
+        json={
+            "products": [
+                {
+                    "product_identifier": "p-1",
+                    "merchant_domain": "merchant.example",
+                    "price_cents": 32900,
+                    "currency": "USD",
+                    "category": "toys",
+                }
+            ]
+        },
+        timeout=5,
+    )
+    assert untrusted_category.status_code == 422
+
 def _process_a_deal() -> dict[str, object]:
     with patch(
         "app.routes.channel3_client_from_environment",

@@ -37,6 +37,39 @@ export type DemoNegotiation = {
   verification_checks: VerificationCheck[];
 };
 
+export type DealAssemblyRequest = {
+  negotiation_id: string;
+  requirements: string[];
+  budget_cents: number;
+  currency: string;
+};
+
+export type DealItem = {
+  requirement: string;
+  product_identifier: string;
+  name: string;
+  merchant_domain: string;
+  offer_url: string;
+  price_cents: number;
+  currency: string;
+  availability: string;
+  source: string;
+  illustrative: boolean;
+};
+
+export type DealAssemblyResponse = {
+  status: string;
+  is_real: boolean;
+  source: string;
+  negotiation_id: string;
+  budget_cents: number;
+  currency: string;
+  total_cents: number;
+  remaining_budget_cents: number;
+  items: DealItem[];
+  limitations: string[];
+};
+
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_HANDSHAKE_API_URL ?? "http://127.0.0.1:8000";
 
@@ -61,4 +94,22 @@ export async function fetchDemoNegotiation(
   }
 
   return (await response.json()) as DemoNegotiation;
+}
+
+export async function assembleDeal(
+  request: DealAssemblyRequest,
+  signal?: AbortSignal,
+): Promise<DealAssemblyResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/deals/assemble`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    ...(signal ? { signal } : {}),
+  });
+
+  if (!response.ok) {
+    throw new Error(`The deal assembly service returned ${response.status}.`);
+  }
+
+  return (await response.json()) as DealAssemblyResponse;
 }
