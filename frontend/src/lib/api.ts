@@ -45,6 +45,7 @@ export type DemoNegotiation = {
   verification_checks: VerificationCheck[];
 };
 
+<<<<<<< HEAD
 export type VerificationCheckDetail = {
   name: string;
   verdict: string;
@@ -106,6 +107,39 @@ export type AuditTrailItem = {
 export type AuditTrailResponse = {
   negotiation_id: string;
   events: AuditTrailItem[];
+=======
+export type DealAssemblyRequest = {
+  negotiation_id: string;
+  requirements: string[];
+  budget_cents: number;
+  currency: string;
+};
+
+export type DealItem = {
+  requirement: string;
+  product_identifier: string;
+  name: string;
+  merchant_domain: string;
+  offer_url: string;
+  price_cents: number;
+  currency: string;
+  availability: string;
+  source: string;
+  illustrative: boolean;
+};
+
+export type DealAssemblyResponse = {
+  status: string;
+  is_real: boolean;
+  source: string;
+  negotiation_id: string;
+  budget_cents: number;
+  currency: string;
+  total_cents: number;
+  remaining_budget_cents: number;
+  items: DealItem[];
+  limitations: string[];
+>>>>>>> b36d2fc0c8274669cc420a80bc6b1013d22cb68e
 };
 
 const API_BASE_URL =
@@ -134,6 +168,7 @@ export async function fetchDemoNegotiation(
   return (await response.json()) as DemoNegotiation;
 }
 
+<<<<<<< HEAD
 export async function verifyDeal(
   negotiationId = "HS-2048",
   signal?: AbortSignal,
@@ -200,4 +235,22 @@ export async function fetchAuditTrail(
   }
 
   return (await response.json()) as AuditTrailResponse;
+=======
+export async function assembleDeal(
+  request: DealAssemblyRequest,
+  signal?: AbortSignal,
+): Promise<DealAssemblyResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/deals/assemble`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    ...(signal ? { signal } : {}),
+  });
+
+  if (!response.ok) {
+    throw new Error(`The deal assembly service returned ${response.status}.`);
+  }
+
+  return (await response.json()) as DealAssemblyResponse;
+>>>>>>> b36d2fc0c8274669cc420a80bc6b1013d22cb68e
 }
