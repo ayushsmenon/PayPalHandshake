@@ -61,12 +61,17 @@ DEMO_MERCHANT = "merchant.example"
 
 
 class DealFlowManager:
-    def __init__(self, db_adapter: PaymentPolicyDbAdapter | None = None) -> None:
+    def __init__(
+        self,
+        db_adapter: PaymentPolicyDbAdapter | None = None,
+        paypal_client: Any | None = None,
+    ) -> None:
         self.db_adapter = db_adapter or PaymentPolicyDbAdapter()
         self.signing_key = Ed25519PrivateKey.generate()
         self.public_key_b64 = base64.b64encode(
             self.signing_key.public_key().public_bytes_raw()
         ).decode("ascii")
+        self.paypal_client = paypal_client
 
     def run_deal_verification(self, negotiation_id_str: str) -> DealVerificationResponse:
         now = datetime.now(timezone.utc)
@@ -272,6 +277,38 @@ class DealFlowManager:
         if not db_mandate:
             raise NotFoundError(f"Mandate {mandate_id} not found in database.")
 
+        client = self.paypal_client
+        if client is None:
+            cid = os.getenv("PAYPAL_CLIENT_ID", "").strip()
+            secret = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
+            pp_env_path = PAYMENT_POLICY_PATH / ".env"
+            if pp_env_path.exists():
+                from dotenv import dotenv_values
+                env_vals = dotenv_values(pp_env_path)
+                cid = cid or str(env_vals.get("PAYPAL_CLIENT_ID", "")).strip()
+                secret = secret or str(env_vals.get("PAYPAL_CLIENT_SECRET", "")).strip()
+
+            is_placeholder = (
+                not cid
+                or not secret
+                or cid.startswith("replace_")
+                or secret.startswith("replace_")
+                or cid.lower() in {"mock", "placeholder", "none"}
+                or secret.lower() in {"mock", "placeholder", "none"}
+            )
+            if is_placeholder:
+                raise ValueError(
+                    "PayPal Sandbox configuration missing: Set valid PAYPAL_CLIENT_ID and "
+                    "PAYPAL_CLIENT_SECRET in services/payment-policy-svc/.env. Synthetic capture "
+                    "fallbacks are strictly prohibited."
+                )
+            from payment_policy.paypal_client import PayPalSandboxClient
+            client = PayPalSandboxClient(
+                client_id=cid,
+                client_secret=secret,
+                db_adapter=self.db_adapter,
+            )
+
         digest = db_mandate.mandate_digest
         now = datetime.now(timezone.utc)
 
@@ -303,7 +340,19 @@ class DealFlowManager:
             raise_on_error=True,
         )
 
-        capture_id = f"CAPTURE-HS2048-{uuid4().hex[:8].upper()}"
+        auth_id = DEMO_PAYPAL_AUTH_ID
+        capture_result = client.capture_authorization(
+            authorization_id=auth_id,
+            amount_cents=41850,
+            currency="USD",
+            idempotency_key=idempotency_key,
+            final_capture=True,
+            negotiation_id=db_mandate.negotiation_id,
+        )
+        capture_id = capture_result.get("id")
+        if not capture_id:
+            raise RuntimeError("PayPal Sandbox did not return a valid capture ID.")
+
         self.db_adapter.record_payment_event(
             idempotency_key=idempotency_key,
             event_type="PAYMENT_CAPTURED",
@@ -313,7 +362,7 @@ class DealFlowManager:
             paypal_authorization_id=DEMO_PAYPAL_AUTH_ID,
             paypal_capture_id=capture_id,
             status="COMPLETED",
-            raw_response_summary={"intent": "CAPTURE", "capture_id": capture_id},
+            raw_response_summary=capture_result,
         )
 
         return DealApprovalCaptureResponse(

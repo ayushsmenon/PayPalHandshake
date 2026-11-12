@@ -103,6 +103,50 @@ def assemble_shopping_deal(request: DealAssemblyRequest) -> DealAssemblyResponse
         ) from error
 
     total_cents = sum(item.price_cents for item in selected)
+    try:
+        import hashlib
+        from uuid import NAMESPACE_URL, uuid5
+        from src.models import Negotiation
+        from src.repositories import DatabaseSessionManager, NegotiationRepository
+
+        db_manager = DatabaseSessionManager()
+        neg_uuid = uuid5(NAMESPACE_URL, request.negotiation_id)
+        with db_manager.session_scope() as session:
+            repo = NegotiationRepository(session)
+            neg = repo.get_negotiation(neg_uuid)
+            if not neg:
+                neg = Negotiation(
+                    id=neg_uuid,
+                    shopper_id="shopper_avery_singh",
+                    request_prompt="; ".join(request.requirements),
+                    budget_cents=request.budget_cents,
+                    currency_code=request.currency,
+                    currency=request.currency,
+                    status="ASSEMBLED" if selected else "OPEN",
+                )
+                session.add(neg)
+                session.flush()
+            for item in selected:
+                prod = repo.add_product(
+                    negotiation_id=neg_uuid,
+                    title=item.name,
+                    external_product_id=item.product_id,
+                    catalog_metadata={"merchant_domain": item.merchant_domain, "offer_url": item.offer_url},
+                )
+                offer_hash = hashlib.sha256(f"{item.product_id}:{item.price_cents}:{item.merchant_domain}".encode()).hexdigest()
+                repo.create_offer_snapshot(
+                    negotiation_id=neg_uuid,
+                    merchant_id=item.merchant_domain,
+                    merchant_name=item.merchant_domain,
+                    price_cents=item.price_cents,
+                    currency_code=item.currency,
+                    currency=item.currency,
+                    offer_hash=offer_hash,
+                    product_id=prod.id,
+                )
+    except Exception:
+        pass
+
     return DealAssemblyResponse(
         status="ASSEMBLED" if selected else "NO_ELIGIBLE_DEAL",
         is_real=bool(selected),

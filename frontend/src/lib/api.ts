@@ -109,7 +109,7 @@ export type AuditTrailResponse = {
 };
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_HANDSHAKE_API_URL ?? "http://127.0.0.1:8000";
+  process.env.NEXT_PUBLIC_HANDSHAKE_API_URL ?? "http://127.0.0.1:8001";
 
 export function formatCents(cents: number, currency = "USD"): string {
   return new Intl.NumberFormat("en-US", {

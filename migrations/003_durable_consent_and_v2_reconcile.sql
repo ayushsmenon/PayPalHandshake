@@ -24,11 +24,12 @@ SET currency_code = currency
 WHERE currency_code IS NULL AND currency IS NOT NULL;
 
 ALTER TABLE mandates
-    ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3);
+    ADD COLUMN IF NOT EXISTS currency VARCHAR(3) DEFAULT 'USD',
+    ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3) DEFAULT 'USD';
 
 UPDATE mandates
-SET currency_code = currency
-WHERE currency_code IS NULL AND currency IS NOT NULL;
+SET currency_code = COALESCE(currency, 'USD')
+WHERE currency_code IS NULL;
 
 ALTER TABLE payment_events
     ADD COLUMN IF NOT EXISTS currency_code VARCHAR(3);

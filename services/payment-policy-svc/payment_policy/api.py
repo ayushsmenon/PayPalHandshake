@@ -141,6 +141,11 @@ def create_app(
         title="PAYPAL HANDSHAKE Payment Policy Service",
         description="Internal read-only decision boundary for verified payment data.",
     )
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok", "service": "payment-policy-svc"}
+
     registry = category_registry or load_product_category_registry()
 
     @app.post("/internal/v1/payment-decisions/dry-run", response_model=DryRunResponse)
