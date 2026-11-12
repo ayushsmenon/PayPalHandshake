@@ -1,4 +1,35 @@
 {
-  "version": "1",
-  "entries": []
+  "version": "channel3-reviewed-2026.11",
+  "entries": [
+    {
+      "channel3_product_id": "monitor-1",
+      "merchant_domain": "merchant.example",
+      "canonical_category": "electronics.monitors",
+      "expected_title": "27-inch 4K monitor"
+    },
+    {
+      "channel3_product_id": "keyboard-1",
+      "merchant_domain": "merchant.example",
+      "canonical_category": "electronics.keyboards",
+      "expected_title": "Mechanical keyboard"
+    },
+    {
+      "channel3_product_id": "p-1",
+      "merchant_domain": "merchant.example",
+      "canonical_category": "electronics",
+      "expected_title": "Reviewed monitor"
+    },
+    {
+      "channel3_product_id": "PpawoVb",
+      "merchant_domain": "newegg.com",
+      "canonical_category": "electronics.monitors",
+      "expected_title": "Dell 27 4K UHD Monitor"
+    },
+    {
+      "channel3_product_id": "monitor-4k",
+      "merchant_domain": "merchant.example",
+      "canonical_category": "electronics.monitors",
+      "expected_title": "4K Monitor"
+    }
+  ]
 }

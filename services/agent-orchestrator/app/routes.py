@@ -1,11 +1,15 @@
-from fastapi import APIRouter
-from fastapi import HTTPException
+from fastapi import APIRouter, HTTPException
 
 from .schemas import (
-    DemoNegotiation,
+    AuditTrailResponse,
+    DealApprovalCaptureRequest,
+    DealApprovalCaptureResponse,
     DealAssemblyRequest,
     DealAssemblyResponse,
     DealItem,
+    DealVerificationRequest,
+    DealVerificationResponse,
+    DemoNegotiation,
     NegotiationEvent,
     NegotiationStatus,
     Product,
@@ -13,8 +17,10 @@ from .schemas import (
     VerificationState,
 )
 from .channel3 import Channel3UnavailableError, assemble_deal, channel3_client_from_environment
+from .deal_flow import DealFlowManager
 
 router = APIRouter(prefix="/api/v1", tags=["negotiations"])
+deal_flow = DealFlowManager()
 
 
 @router.get("/negotiations/demo", response_model=DemoNegotiation)
@@ -121,3 +127,38 @@ def assemble_shopping_deal(request: DealAssemblyRequest) -> DealAssemblyResponse
         ],
         limitations=limitations,
     )
+
+
+@router.post("/deals/verify", response_model=DealVerificationResponse)
+def verify_deal_endpoint(request: DealVerificationRequest) -> DealVerificationResponse:
+    try:
+        return deal_flow.run_deal_verification(request.negotiation_id)
+    except Exception as error:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Verification failed: {error}",
+        ) from error
+
+
+@router.post("/deals/approve-and-capture", response_model=DealApprovalCaptureResponse)
+def approve_and_capture_deal_endpoint(
+    request: DealApprovalCaptureRequest,
+) -> DealApprovalCaptureResponse:
+    try:
+        return deal_flow.approve_and_capture_deal(request)
+    except Exception as error:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Approval and capture failed: {error}",
+        ) from error
+
+
+@router.get("/audit/trail/{negotiation_id}", response_model=AuditTrailResponse)
+def get_audit_trail_endpoint(negotiation_id: str) -> AuditTrailResponse:
+    try:
+        return deal_flow.get_audit_trail(negotiation_id)
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch audit trail: {error}",
+        ) from error

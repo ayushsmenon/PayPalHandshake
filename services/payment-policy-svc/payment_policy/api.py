@@ -1,17 +1,32 @@
-"""Internal, read-only Process C payment-decision endpoint."""
-
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Literal
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+SERVICE_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(SERVICE_ENV_PATH, override=False)
+
 from .paypal_adapter import PayPalVerificationAdapter
+from .paypal_client import PayPalSandboxClient
 from .process_b_client import ProcessBClient, ProcessBVerificationError
-from .consent import ConsentEvidenceProvider, consent_matches_mandate
+from .consent import ConsentEvidenceProvider, MandateConsentEvidence, consent_matches_mandate
+from .db import PaymentPolicyDbAdapter
+from .mandate_service import (
+    IssueMandateV2Request,
+    IssueMandateV2Response,
+    issue_and_record_mandate_v2,
+)
+from .payment_service import (
+    PaymentExecutionOrchestrator,
+    PaymentOrchestrationError,
+)
 from .versioned_models import (
     CandidateDealV2,
     MandateV2,
@@ -79,11 +94,40 @@ class DryRunResponse(BaseModel):
     reason: str
 
 
+class CapturePaymentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mandate: MandateV2
+    mandate_signature: str
+    post_authorization_binding: PostAuthorizationBindingV1
+    binding_signature: str
+    candidate: CandidateDealV2
+    consent_evidence: MandateConsentEvidence
+    idempotency_key: str
+
+
+class CapturePaymentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    capture_id: str | None = None
+    amount_cents: int
+    currency: str
+    paypal_order_id: str
+    paypal_authorization_id: str
+    mandate_id: str
+    mandate_digest_b64: str
+    verification_passed: bool
+    mandate_consumed: bool
+
+
 def create_app(
     *,
     paypal_adapter: PayPalVerificationAdapter | None = None,
+    paypal_client: PayPalSandboxClient | None = None,
     process_b_client: ProcessBClient | None = None,
     consent_provider: ConsentEvidenceProvider | None = None,
+    db_adapter: PaymentPolicyDbAdapter | None = None,
     environment: str = "production",
     category_registry=None,
 ) -> FastAPI:
@@ -222,6 +266,81 @@ def create_app(
                 ) from error
             references.append(reference)
         return ProductReferenceV2IssuanceResponse(references=references)
+
+    @app.post(
+        "/internal/v2/mandates/issue",
+        response_model=IssueMandateV2Response,
+    )
+    def issue_mandate_endpoint(
+        request: IssueMandateV2Request,
+    ) -> IssueMandateV2Response:
+        resolved_db = db_adapter or PaymentPolicyDbAdapter()
+        shopper_id = "shopper_authenticated_demo"
+        try:
+            return issue_and_record_mandate_v2(
+                request=request,
+                shopper_id=shopper_id,
+                db_adapter=resolved_db,
+            )
+        except Exception as error:
+            raise HTTPException(
+                status_code=422,
+                detail=str(error),
+            ) from error
+
+    @app.post(
+        "/internal/v2/payments/capture",
+        response_model=CapturePaymentResponse,
+    )
+    def capture_payment_endpoint(
+        request: CapturePaymentRequest,
+    ) -> CapturePaymentResponse:
+        if process_b_client is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Process B verification client is not configured.",
+            )
+        resolved_db = db_adapter or PaymentPolicyDbAdapter()
+        resolved_paypal = (
+            paypal_client
+            or (
+                PayPalSandboxClient(db_adapter=resolved_db)
+                if paypal_adapter is None
+                else paypal_adapter
+            )
+        )
+        orchestrator = PaymentExecutionOrchestrator(
+            db_adapter=resolved_db,
+            process_b_client=process_b_client,
+            paypal_client=resolved_paypal,
+        )
+        try:
+            result = orchestrator.verify_and_capture_deal(
+                mandate=request.mandate,
+                mandate_signature_b64=request.mandate_signature,
+                binding=request.post_authorization_binding,
+                binding_signature_b64=request.binding_signature,
+                candidate=request.candidate,
+                consent_evidence=request.consent_evidence,
+                idempotency_key=request.idempotency_key,
+            )
+            return CapturePaymentResponse(
+                status=result["status"],
+                capture_id=result["capture_id"],
+                amount_cents=result["amount_cents"],
+                currency=result["currency"],
+                paypal_order_id=result["paypal_order_id"],
+                paypal_authorization_id=result["paypal_authorization_id"],
+                mandate_id=result["mandate_id"],
+                mandate_digest_b64=result["mandate_digest_b64"],
+                verification_passed=result["verification_passed"],
+                mandate_consumed=result["mandate_consumed"],
+            )
+        except (PaymentOrchestrationError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail=str(error),
+            ) from error
 
     return app
 
